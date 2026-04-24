@@ -1,0 +1,30 @@
+<% layout('layouts/stmv', { title: 'License' }) %>
+<div class="wizard-step-2 d-block">
+  <h6>Enter your Envato purchase code to verify your license</h6>
+  
+  <% if (typeof session !== 'undefined' && session._errors && session._errors.license) { %>
+    <div class="alert alert-danger"><%= session._errors.license %></div>
+  <% } %>
+  
+  <form method="POST" action="/install/license" class="mt-4">
+    <div class="form-group">
+      <label for="envato_username">Envato Username</label>
+      <input type="text" class="form-control" id="envato_username" name="envato_username" required 
+             value="<%= typeof session !== 'undefined' && session._old && session._old.envato_username ? session._old.envato_username : '' %>">
+    </div>
+    
+    <div class="form-group">
+      <label for="license">Purchase Code (License)</label>
+      <input type="text" class="form-control" id="license" name="license" 
+             placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" 
+             pattern="^([a-f0-9]{8})-(([a-f0-9]{4})-){3}([a-f0-9]{12})$" 
+             required
+             value="<%= typeof session !== 'undefined' && session._old && session._old.license ? session._old.license : '' %>">
+      <small class="form-text text-muted">Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</small>
+    </div>
+    
+    <div class="next-btn text-right mt-4">
+      <button type="submit" class="btn btn-primary">Verify License <i class="far fa-hand-point-right ms-2"></i></button>
+    </div>
+  </form>
+</div>

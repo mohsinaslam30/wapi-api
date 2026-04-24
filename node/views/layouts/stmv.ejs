@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Installation Wizard</title>
+  <link rel="icon" href="/favicon.png" type="image/x-icon">
+  <link rel="shortcut icon" href="/favicon.png" type="image/x-icon">
+  <link href="https://fonts.googleapis.com/css?family=Roboto:400,400i,500,500i,700,700i&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css?family=Rubik:400,400i,500,500i,700,700i" rel="stylesheet">
+  <link rel="stylesheet" href="/install/css/vendors/bootstrap.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <link rel="stylesheet" href="/install/css/vendors/feathericon.min.css">
+  <link rel="stylesheet" href="/install/css/vendors/animate.css">
+  <link rel="stylesheet" href="/install/css/app.css">
+</head>
+<body>
+  <div class="page-wrapper">
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <div class="wizard-bg">
+      <div class="container">
+        <div class="wizard-box">
+          <div class="row">
+            <div class="col-sm-12">
+              <!-- Flash Messages -->
+              <% if (typeof session !== 'undefined' && session) { %>
+                <% if (session.success) { %>
+                  <div class="alert alert-success alert-dismissible fade show" role="alert">
+                    <i class="fas fa-check-circle me-2"></i><%= session.success %>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                  </div>
+                <% } %>
+                <% if (session.error) { %>
+                  <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    <i class="fas fa-exclamation-circle me-2"></i><%= session.error %>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                  </div>
+                <% } %>
+                <% if (session.warning) { %>
+                  <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                    <i class="fas fa-exclamation-triangle me-2"></i><%= session.warning %>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                  </div>
+                <% } %>
+                <% if (session.info) { %>
+                  <div class="alert alert-info alert-dismissible fade show" role="alert">
+                    <i class="fas fa-info-circle me-2"></i><%= session.info %>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                  </div>
+                <% } %>
+                <% if (session._errors && Object.keys(session._errors).length > 0) { %>
+                  <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    <i class="fas fa-times-circle me-2"></i>
+                    <strong>Validation Errors:</strong>
+                    <ul class="mb-0 mt-2">
+                      <% Object.keys(session._errors).forEach(key => { %>
+                        <li><%= session._errors[key] %></li>
+                      <% }) %>
+                    </ul>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                  </div>
+                <% } %>
+              <% } %>
+              <div class="wizard-step-container">
+                <ul class="step-container">
+                  <li class="step-container step-1 <%= typeof routeIs !== 'undefined' && routeIs('install.requirements') ? 'active' : '' %>">
+                    <div class="media">
+                      <div class="step-icon"><i class="fas fa-clipboard-check"></i><span>1</span></div>
+                      <div class="media-body"><h5>Requirements</h5><h6>System Requirements</h6></div>
+                      <div class="icon-center"><i data-feather="chevrons-right"></i></div>
+                    </div>
+                  </li>
+                  <li class="step-container step-2 <%= typeof routeIs !== 'undefined' && routeIs('install.license') ? 'active' : '' %>">
+                    <div class="media">
+                      <div class="step-icon"><i class="fas fa-key"></i><span>2</span></div>
+                      <div class="media-body"><h5>License</h5><h6>License Verification</h6></div>
+                      <div class="icon-center"><i data-feather="chevrons-right"></i></div>
+                    </div>
+                  </li>
+                  <li class="step-container step-3 <%= typeof routeIs !== 'undefined' && routeIs('install.database') ? 'active' : '' %>">
+                    <div class="media">
+                      <div class="step-icon"><i class="fas fa-database"></i><span>3</span></div>
+                      <div class="media-body"><h5>Configuration</h5><h6>Connection Details</h6></div>
+                      <div class="icon-center"><i data-feather="chevrons-right"></i></div>
+                    </div>
+                  </li>
+                  <li class="step-container step-4 <%= typeof routeIs !== 'undefined' && routeIs('install.completed') ? 'active' : '' %>">
+                    <div class="media">
+                      <div class="step-icon"><i class="fas fa-check"></i><span>4</span></div>
+                      <div class="media-body"><h5>Complete</h5><h6>Installation Complete</h6></div>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+              <div class="wizard-form-details">
+                <%- include('../partials/sts') %>
+                <%- body %>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications CSS -->
+  <link rel="stylesheet" href="/install/css/notifications.css">
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js" crossorigin="anonymous"></script>
+  <script src="/uploads/install/js/popper.min.js"></script>
+  <script src="/uploads/install/js/bootstrap.min.js"></script>
+  <script src="/uploads/install/js/feather-icon/feather.min.js"></script>
+
+  <script>
+    // Auto-hide alerts after 5 seconds
+    $(document).ready(function() {
+      setTimeout(function() {
+        $('.alert').fadeOut('slow');
+      }, 5000);
+
+      // Initialize feather icons
+      if (typeof feather !== 'undefined') {
+        feather.replace();
+      }
+    });
+
+    // Toast notification helper
+    function showToast(message, type = 'info', title = '') {
+      const icons = {
+        success: 'fa-check-circle',
+        error: 'fa-exclamation-circle',
+        warning: 'fa-exclamation-triangle',
+        info: 'fa-info-circle'
+      };
+
+      const toast = $(`
+        <div class="toast-notification ${type}">
+          <i class="fas ${icons[type]} toast-icon"></i>
+          <div class="toast-content">
+            ${title ? `<div class="toast-title">${title}</div>` : ''}
+            <div class="toast-message">${message}</div>
+          </div>
+          <button class="toast-close" onclick="$(this).closest('.toast-notification').remove()">&times;</button>
+        </div>
+      `);
+
+      $('#toast-container').append(toast);
+
+      // Auto-remove after 5 seconds
+      setTimeout(() => {
+        toast.addClass('hiding');
+        setTimeout(() => toast.remove(), 300);
+      }, 5000);
+    }
+  </script>
+
+  <% if (typeof scripts !== 'undefined') { %><%- scripts %><% } %>
+</body>
+</html>
