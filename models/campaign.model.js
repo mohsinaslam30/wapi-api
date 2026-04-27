@@ -110,7 +110,7 @@ const CampaignSchema = new mongoose.Schema({
 
   recipient_type: {
     type: String,
-    enum: ['specific_contacts', 'all_contacts', 'tags'],
+    enum: ['specific_contacts', 'all_contacts', 'tags', 'segments'],
     required: true
   },
   specific_contacts: [{
@@ -121,7 +121,10 @@ const CampaignSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Tag'
   }],
-
+  segment_ids: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Segment'
+  }],
   variables_mapping: {
     type: Map,
     of: mongoose.Schema.Types.Mixed,

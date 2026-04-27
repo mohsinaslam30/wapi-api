@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
 import { Widget } from '../models/index.js';
+import { deleteFile } from '../utils/aws-storage.js';
 
 function toBool(value) {
   if (typeof value === 'boolean') return value;
@@ -99,18 +100,9 @@ function buildWidgetEmbedCode(req, widget) {
   <script src="${scriptSrc}"></script>`;
 }
 
-function maybeDeleteLocalUpload(relativeUrl) {
-  if (!relativeUrl || typeof relativeUrl !== 'string') return;
-  if (!relativeUrl.startsWith('/uploads/')) return;
-  if (!relativeUrl.includes('/widgets/')) return;
-
-  const absolutePath = path.join(process.cwd(), relativeUrl.replace(/^\//, ''));
-  if (fs.existsSync(absolutePath)) {
-    try {
-      fs.unlinkSync(absolutePath);
-    } catch {
-    }
-  }
+async function maybeDeleteLocalUpload(url) {
+  if (!url) return;
+  await deleteFile(url);
 }
 
 
@@ -120,23 +112,21 @@ function extractUploadedFiles(req) {
   let bodyBgImagePath = null;
 
   if (files.widget_image && files.widget_image[0]) {
-    const f = files.widget_image[0];
-    widgetImagePath = `/${f.destination}/${f.filename}`.replace(/\\/g, '/');
+    widgetImagePath = files.widget_image[0].path;
   }
 
   if (files.body_background_image && files.body_background_image[0]) {
-    const f = files.body_background_image[0];
-    bodyBgImagePath = `/${f.destination}/${f.filename}`.replace(/\\/g, '/');
+    bodyBgImagePath = files.body_background_image[0].path;
   }
 
   return { widgetImagePath, bodyBgImagePath };
 }
 
 
-function cleanupUploadedFiles(req) {
+async function cleanupUploadedFiles(req) {
   const { widgetImagePath, bodyBgImagePath } = extractUploadedFiles(req);
-  if (widgetImagePath) maybeDeleteLocalUpload(widgetImagePath);
-  if (bodyBgImagePath) maybeDeleteLocalUpload(bodyBgImagePath);
+  if (widgetImagePath) await maybeDeleteLocalUpload(widgetImagePath);
+  if (bodyBgImagePath) await maybeDeleteLocalUpload(bodyBgImagePath);
 }
 
 export const createWidget = async (req, res) => {
@@ -180,7 +170,7 @@ export const createWidget = async (req, res) => {
       deleted_at: null,
     }).lean();
     if (existing) {
-      cleanupUploadedFiles(req);
+      await cleanupUploadedFiles(req);
       return res.status(409).json({
         success: false,
         message: 'Widget already exists for this WhatsApp phone number',
@@ -200,7 +190,7 @@ export const createWidget = async (req, res) => {
       },
     });
   } catch (error) {
-    cleanupUploadedFiles(req);
+    await cleanupUploadedFiles(req);
     console.error('Error creating widget:', error);
     return res.status(500).json({
       success: false,
@@ -290,13 +280,13 @@ export const updateWidget = async (req, res) => {
     if (widgetImagePath) {
       const old = widget.widget_image_url;
       widget.widget_image_url = widgetImagePath;
-      if (old && old !== widgetImagePath) maybeDeleteLocalUpload(old);
+      if (old && old !== widgetImagePath) await maybeDeleteLocalUpload(old);
     }
 
     if (bodyBgImagePath) {
       const old = widget.body_background_image;
       widget.body_background_image = bodyBgImagePath;
-      if (old && old !== bodyBgImagePath) maybeDeleteLocalUpload(old);
+      if (old && old !== bodyBgImagePath) await maybeDeleteLocalUpload(old);
     }
 
     await widget.save();
@@ -351,8 +341,8 @@ export const deleteWidget = async (req, res) => {
     widget.deleted_at = new Date();
     await widget.save();
 
-    if (oldImage) maybeDeleteLocalUpload(oldImage);
-    if (oldBgImage) maybeDeleteLocalUpload(oldBgImage);
+    if (oldImage) await maybeDeleteLocalUpload(oldImage);
+    if (oldBgImage) await maybeDeleteLocalUpload(oldBgImage);
 
     return res.status(200).json({
       success: true,
@@ -583,8 +573,8 @@ export const bulkDeleteWidgets = async (req, res) => {
 
 
     for (const widget of existingWidgets) {
-      if (widget.widget_image_url) maybeDeleteLocalUpload(widget.widget_image_url);
-      if (widget.body_background_image) maybeDeleteLocalUpload(widget.body_background_image);
+      if (widget.widget_image_url) await maybeDeleteLocalUpload(widget.widget_image_url);
+      if (widget.body_background_image) await maybeDeleteLocalUpload(widget.body_background_image);
     }
 
     const response = {

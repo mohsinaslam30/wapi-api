@@ -78,11 +78,6 @@ export const getQuickReplies = async (req, res) => {
 
 export const getAdminQuickReplies = async (req, res) => {
     try {
-        const roleKey = req.user.role;
-        if (roleKey !== 'super_admin' && roleKey !== 'admin') {
-            return res.status(403).json({ success: false, message: 'You do not have permission to access admin quick replies.' });
-        }
-
         const { page = 1, limit = 50, search = '', sort = 'createdAt', order = 'desc' } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const limitNum = parseInt(limit);

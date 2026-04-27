@@ -11,12 +11,24 @@ async function uploadMediaToWhatsApp({
   const form = new FormData();
 
   form.append("messaging_product", "whatsapp");
-
   form.append("type", mime_type);
 
-  form.append("file", buffer, {
-    filename,
+  const fileOptions = {
+    filename: filename || 'audio.ogg',
     contentType: mime_type
+  };
+
+  if (mime_type.includes('audio/ogg') && !fileOptions.filename.endsWith('.ogg')) {
+    fileOptions.filename = fileOptions.filename + '.ogg';
+  }
+
+  form.append("file", buffer, fileOptions);
+
+  console.log('[UploadMedia] Uploading to WhatsApp:', {
+    phone_number_id,
+    mime_type,
+    filename: fileOptions.filename,
+    bufferSize: buffer.length
   });
 
   const response = await axios.post(
@@ -26,7 +38,9 @@ async function uploadMediaToWhatsApp({
       headers: {
         Authorization: `Bearer ${access_token}`,
         ...form.getHeaders()
-      }
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
     }
   );
 

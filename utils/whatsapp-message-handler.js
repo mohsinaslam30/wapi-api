@@ -1,6 +1,10 @@
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
+import { Setting } from '../models/index.js';
+import AWSStorage from './aws-storage.js';
+const writeFile = promisify(fs.writeFile);
 
 
 export function parseIncomingMessage(message) {
@@ -60,7 +64,7 @@ export function parseIncomingMessage(message) {
       break;
 
     case "interactive":
-      console.log("message.interactive" , message.interactive)
+      console.log("message.interactive", message.interactive)
       if (message.interactive?.button_reply) {
         interactiveId = message.interactive.button_reply.id;
         content = message.interactive.button_reply.title;
@@ -74,19 +78,19 @@ export function parseIncomingMessage(message) {
         fileType = "nfm_reply";
       }
 
-      else if(message.interactive?.call_permission_reply) {
+      else if (message.interactive?.call_permission_reply) {
         const permissionResponse = message.interactive.call_permission_reply;
 
-        if(permissionResponse.response === "reject") {
+        if (permissionResponse.response === "reject") {
           content = "call permission is rejected";
         }
-        else if(permissionResponse.response === "accept") {
+        else if (permissionResponse.response === "accept") {
           content = permissionResponse.is_permanent
             ? "call permission is allowed permanently"
             : "call permission is allowed temporarily";
         }
       }
-      console.log("content" , content)
+      console.log("content", content)
       break;
 
     case "reaction":
@@ -125,13 +129,13 @@ export function getExtension(mimeType, fallback = "bin") {
   if (!mimeType) return fallback;
 
   const map = {
-      "image/jpeg": "jpg",
-      "image/png": "png",
-      "image/webp": "webp",
-      "video/mp4": "mp4",
-      "audio/ogg": "ogg",
-      "audio/mpeg": "mp3",
-      "application/pdf": "pdf"
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "video/mp4": "mp4",
+    "audio/ogg": "ogg",
+    "audio/mpeg": "mp3",
+    "application/pdf": "pdf"
   };
 
   return map[mimeType] || mimeType.split("/")[1] || fallback;
@@ -140,18 +144,50 @@ export function getExtension(mimeType, fallback = "bin") {
 
 export function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+    fs.mkdirSync(dirPath, { recursive: true });
   }
 }
 
 
-export async function downloadAndStoreMedia(url, accessToken, mimeType, fileType) {
+export async function downloadAndStoreMedia(url, accessToken, mimeType, fileType, userId = null) {
   const ext = getExtension(mimeType);
   const filename = `${Date.now()}-${Math.random()
     .toString(36)
     .slice(2)}.${ext}`;
 
   const safeType = fileType || "other";
+  const subfolder = `whatsapp/${safeType}`;
+
+  const response = await axios.get(url, {
+    responseType: "arraybuffer",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  const buffer = Buffer.from(response.data);
+
+  const setting = await Setting.findOne().lean();
+  if (setting && setting.is_aws_s3_enabled) {
+    try {
+      const aws = new AWSStorage({
+        accessKeyId: setting.aws_s3_access_key,
+        secretAccessKey: setting.aws_s3_secret_key,
+        region: setting.aws_s3_region,
+        bucket: setting.aws_s3_bucket
+      });
+      if (aws.isConfigured()) {
+        const s3Url = await aws.uploadFile({
+          buffer: buffer,
+          originalname: filename,
+          mimetype: mimeType
+        }, `uploads/${subfolder}`, userId);
+        return s3Url;
+      }
+    } catch (err) {
+      console.error('[WhatsAppHandler] Error uploading download to S3:', err.message);
+    }
+  }
 
   const uploadDir = path.join(
     process.cwd(),
@@ -163,20 +199,45 @@ export async function downloadAndStoreMedia(url, accessToken, mimeType, fileType
   ensureDir(uploadDir);
 
   const filePath = path.join(uploadDir, filename);
+  await writeFile(filePath, buffer);
 
-  const response = await axios.get(url, {
-    responseType: "stream",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
+  return `/uploads/whatsapp/${safeType}/${filename}`;
+}
+
+
+export async function saveBufferLocally(buffer, mimeType, fileType, userId = null) {
+  const ext = getExtension(mimeType);
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const safeType = fileType || 'other';
+  const subfolder = `whatsapp/${safeType}`;
+
+  const setting = await Setting.findOne().lean();
+  if (setting && setting.is_aws_s3_enabled) {
+    try {
+      const aws = new AWSStorage({
+        accessKeyId: setting.aws_s3_access_key,
+        secretAccessKey: setting.aws_s3_secret_key,
+        region: setting.aws_s3_region,
+        bucket: setting.aws_s3_bucket
+      });
+      if (aws.isConfigured()) {
+        const s3Url = await aws.uploadFile({
+          buffer: buffer,
+          originalname: filename,
+          mimetype: mimeType
+        }, `uploads/${subfolder}`, userId);
+        return s3Url;
+      }
+    } catch (err) {
+      console.error('[WhatsAppHandler] Error uploading buffer to S3:', err.message);
     }
-  });
+  }
 
-  await new Promise((resolve, reject) => {
-    const stream = fs.createWriteStream(filePath);
-    response.data.pipe(stream);
-    stream.on("finish", resolve);
-    stream.on("error", reject);
-  });
+  const uploadDir = path.join(process.cwd(), 'uploads', 'whatsapp', safeType);
+  ensureDir(uploadDir);
+
+  const filePath = path.join(uploadDir, filename);
+  await writeFile(filePath, buffer);
 
   return `/uploads/whatsapp/${safeType}/${filename}`;
 }

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { EcommerceCatalog, EcommerceProduct, WhatsappWaba } from '../models/index.js';
+import * as funnelService from '../services/funnel.service.js';
 import {
   getWABACatalogsFromAPI,
   linkCatalogToWABAFromAPI,
@@ -808,6 +809,57 @@ export const updateProductInCatalog = async (req, res) => {
   }
 };
 
+export const getProductFunnels = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const funnels = await funnelService.getFunnelsByType(userId, 'ecommerce_product');
+    res.status(200).json({ success: true, data: funnels });
+  } catch (error) {
+    console.error("Error fetching product funnels:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getProductKanbanStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const status = await funnelService.getItemStatus(id, userId);
+    res.status(200).json({ success: true, data: status });
+  } catch (error) {
+    console.error("Error fetching product kanban status:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const handleProductKanbanAction = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { globalItemId, actions } = req.body;
+
+    let result;
+    if (actions && Array.isArray(actions)) {
+      result = await funnelService.processBulkActions({
+        globalItemId,
+        actions,
+        userId,
+        changedBy: req.user.id
+      });
+    } else {
+      result = await funnelService.processAction({
+        ...req.body,
+        userId,
+        changedBy: req.user.id
+      });
+    }
+
+    res.status(200).json({ success: true, data: result, message: "Action processed successfully" });
+  } catch (error) {
+    console.error("Error processing product kanban action:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export default {
   getWABACatalogs,
   syncWABACatalogs,
@@ -818,5 +870,8 @@ export default {
   getUserCatalogs,
   getUserProducts,
   deleteProductFromCatalog,
-  updateProductInCatalog
+  updateProductInCatalog,
+  getProductFunnels,
+  getProductKanbanStatus,
+  handleProductKanbanAction
 };

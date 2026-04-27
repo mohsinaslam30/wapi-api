@@ -78,12 +78,24 @@ import GoogleCalendar from './google-calendar.model.js';
 import GoogleSheet from './google-sheet.model.js';
 import QuickReply from './quick-reply.model.js';
 import QuickReplyFavorite from './quick-reply-favorite.model.js';
+import KanbanFunnel from './kanban-funnel.model.js';
+import KanbanItem from './kanban-item.model.js';
+import Segment from './segment.model.js';
+
 
 import Form from './formBuilder.model.js';
 import AppointmentConfig from './appointment-config.model.js';
 import AppointmentBooking from './appointment-booking.model.js';
 import PaymentGatewayConfig from './payment-gateway-config.model.js';
 import PaymentTransaction from './payment-transaction.model.js';
+import FacebookConnection from './facebook-connection.model.js';
+import FacebookPage from './facebook-page.model.js';
+import FacebookAdCampaign from './facebook-ad-campaign.model.js';
+import FacebookAdSet from './facebook-ad-set.model.js';
+import FacebookAd from './facebook-ad.model.js';
+import FacebookAdAccount from './facebook-ad-account.model.js';
+import FacebookLeadForm from './facebook-lead-form.model.js';
+import FacebookLead from './facebook-lead.model.js';
 
 
 import AiPromptLog from './aiPromptLogs.model.js';
@@ -162,8 +174,20 @@ const db = {
   AppointmentBooking,
   QuickReply,
   QuickReplyFavorite,
+  KanbanFunnel,
+  KanbanItem,
+  Segment,
+
   PaymentGatewayConfig,
   PaymentTransaction,
+  FacebookConnection,
+  FacebookPage,
+  FacebookAdCampaign,
+  FacebookAdSet,
+  FacebookAd,
+  FacebookAdAccount,
+  FacebookLeadForm,
+  FacebookLead,
   mongoose,
 
 
@@ -196,5 +220,14 @@ export {
   AppointmentBooking,
   PaymentGatewayConfig,
   PaymentTransaction,
-  Plan, Template, Webhook, Subscription, PaymentHistory, AIModel, AgentTask, AutomationFlow, AutomationExecution, ChatAssignment, Contact, CustomField, Tag, Attachment, Campaign, UserSetting, EcommerceCatalog, EcommerceProduct, EcommerceOrder, EcommerceOrderStatusTemplate, LandingPage, ApiKey, Widget, ShortLink, ImportJob, ReplyMaterial, WorkingHours, Workspace, Sequence, SequenceStep, WabaConfiguration, Tax, GoogleAccount, GoogleCalendar, GoogleSheet, QuickReply, QuickReplyFavorite, connectDB,
+  FacebookConnection,
+  FacebookPage,
+  FacebookAdCampaign,
+  FacebookAdSet,
+  FacebookAd,
+  FacebookAdAccount,
+  FacebookLeadForm,
+  FacebookLead,
+  Segment,
+  Plan, Template, Webhook, Subscription, PaymentHistory, AIModel, AgentTask, AutomationFlow, AutomationExecution, ChatAssignment, Contact, CustomField, Tag, Attachment, Campaign, UserSetting, EcommerceCatalog, EcommerceProduct, EcommerceOrder, EcommerceOrderStatusTemplate, LandingPage, ApiKey, Widget, ShortLink, ImportJob, ReplyMaterial, WorkingHours, Workspace, Sequence, SequenceStep, WabaConfiguration, Tax, GoogleAccount, GoogleCalendar, GoogleSheet, QuickReply, QuickReplyFavorite, KanbanFunnel , KanbanItem , connectDB
 };

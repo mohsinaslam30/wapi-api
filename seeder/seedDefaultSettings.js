@@ -53,7 +53,7 @@ async function seedDefaultSettings() {
         'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg',
         'mp4', 'mpeg', 'mov', 'webm',
         'mp3', 'wav', 'ogg',
-        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt',
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt',
         'json'
       ],
       app_id: process.env.app_id || null,

@@ -3,6 +3,7 @@ import { Subscription, PaymentHistory, User, Plan } from '../models/index.js';
 import { stripe, getStripe, PayPalService } from '../utils/payment-gateway.service.js';
 import { RazorpayService, calculatePeriodEnd } from '../utils/payment-gateway.service.js';
 import { generateInvoiceNumber } from '../utils/invoice-helper.js';
+import { formatAmount } from '../utils/currency.service.js';
 
 function getStripeWebhookSecret() {
     return process.env.STRIPE_WEBHOOK_SECRET || null;
@@ -166,6 +167,7 @@ const handleSubscriptionUpdated = async (stripeSubscription) => {
                 subscription.plan_id = newPlan._id;
                 subscription.taxes = newPlan.taxes || [];
                 subscription.usage = {};
+                subscription.features = newPlan.features;
                 console.log('[Stripe webhook] Plan updated via portal:', subscription._id, '->', newPlan.name);
             }
         }
@@ -259,7 +261,7 @@ const handleInvoicePaymentSucceeded = async (invoice) => {
         }
 
         subscription.payment_status = 'paid';
-        subscription.amount_paid = invoice.amount_paid / 100;
+        subscription.amount_paid = formatAmount(invoice.amount_paid / 100);
         subscription.transaction_id = invoice.payment_intent;
 
         if (subscription.status === 'trial' && invoice.billing_reason === 'subscription_create') {
@@ -280,7 +282,7 @@ const handleInvoicePaymentSucceeded = async (invoice) => {
             user_id: subscription.user_id,
             subscription_id: subscription._id,
             plan_id: subscription.plan_id,
-            amount: invoice.amount_paid / 100,
+            amount: formatAmount(invoice.amount_paid / 100),
             currency: invoice.currency.toUpperCase(),
             payment_method: 'card',
             payment_status: 'success',
@@ -323,7 +325,7 @@ const handleInvoicePaymentFailed = async (invoice) => {
             user_id: subscription.user_id,
             subscription_id: subscription._id,
             plan_id: subscription.plan_id,
-            amount: invoice.amount_due / 100,
+            amount: formatAmount(invoice.amount_due / 100),
             currency: invoice.currency.toUpperCase(),
             payment_method: 'card',
             payment_status: 'failed',
@@ -376,7 +378,7 @@ const handleCheckoutSessionCompleted = async (session) => {
                 existingSubscription.status = stripeSubscription.status === 'trialing' ? 'trial' : 'active';
                 existingSubscription.payment_status = 'paid';
                 if (session.payment_status === 'paid' && session.amount_total) {
-                    existingSubscription.amount_paid = session.amount_total / 100;
+                    existingSubscription.amount_paid = formatAmount(session.amount_total / 100);
                 }
                 if (session.payment_intent) {
                     existingSubscription.transaction_id = session.payment_intent;
@@ -453,7 +455,7 @@ const handleCheckoutSessionCompleted = async (session) => {
             : null;
 
         const userIdObj = new mongoose.Types.ObjectId(userId);
-        const amountPaid = session.amount_total ? session.amount_total / 100 : plan.price;
+        const amountPaid = session.amount_total ? formatAmount(session.amount_total / 100) : plan.price;
 
         let subscription = await Subscription.findOne({
             user_id: userIdObj,
@@ -516,6 +518,7 @@ const handleCheckoutSessionCompleted = async (session) => {
                 stripe_subscription_id: stripeSubscriptionId || null,
                 stripe_customer_id: stripeCustomerId,
                 taxes: plan.taxes || [],
+                features: plan.features,
                 auto_renew: !!stripeSubscriptionId
             });
 
@@ -674,7 +677,7 @@ const handleRazorpaySubscriptionCharged = async (razorpaySubscription, payment) 
         }
 
         subscription.payment_status = 'paid';
-        subscription.amount_paid = payment.amount / 100;
+        subscription.amount_paid = formatAmount(payment.amount / 100);
         subscription.transaction_id = payment.id;
         subscription.status = 'active';
 
@@ -692,7 +695,7 @@ const handleRazorpaySubscriptionCharged = async (razorpaySubscription, payment) 
             user_id: subscription.user_id,
             subscription_id: subscription._id,
             plan_id: subscription.plan_id,
-            amount: payment.amount / 100,
+            amount: formatAmount(payment.amount / 100),
             currency: payment.currency.toUpperCase(),
             payment_method: payment.method,
             payment_status: 'success',
@@ -803,7 +806,7 @@ const handleRazorpayPaymentFailed = async (payment) => {
                 user_id: subscription.user_id,
                 subscription_id: subscription._id,
                 plan_id: subscription.plan_id,
-                amount: payment.amount / 100,
+                amount: formatAmount(payment.amount / 100),
                 currency: payment.currency.toUpperCase(),
                 payment_method: payment.method,
                 payment_status: 'failed',

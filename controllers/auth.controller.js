@@ -1,8 +1,10 @@
 import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
 import { generateToken } from '../utils/jwt.js';
-import { User, Session, Setting, OTPLog, Subscription, Plan, Role, RolePermission, Permission, TeamPermission } from '../models/index.js';
+import { User, Session, Setting, OTPLog, Subscription, Plan, Role, RolePermission, Permission, TeamPermission, WhatsappWaba, WhatsappConnection } from '../models/index.js';
 import { sendMail } from '../utils/mail.js';
+import UnifiedWhatsAppService from '../services/whatsapp/unified-whatsapp.service.js';
+import OTPService from '../services/otp.service.js';
 const OTP_LENGTH = 6;
 const OTP_EXPIRATION_MINUTES = 10;
 const DEFAULT_SESSION_EXPIRATION_DAYS = 7;
@@ -12,13 +14,13 @@ const BCRYPT_SALT_ROUNDS = 10;
 const PASSWORD_MIN_LENGTH = 8;
 const NAME_MIN_LENGTH = 2;
 const NAME_MAX_LENGTH = 50;
-const PHONE_MIN_LENGTH = 7;
+const PHONE_MIN_LENGTH = 6;
 const PHONE_MAX_LENGTH = 15;
 
 const REGEX = {
   NAME: /^[a-zA-Z\s]{2,50}$/,
   EMAIL: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  PHONE: /^\d{7,15}$/
+  PHONE: /^\d{6,15}$/
 };
 
 
@@ -231,14 +233,42 @@ export const register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
 
+    const settings = await Setting.findOne().sort({ created_at: -1 });
+    const globalStorageLimitMB = settings?.storage_limit || 100;
+
     const newUser = await User.create({
       name: name.trim(),
       email: normalizedEmail,
       country_code: countryCode,
       phone,
       role_id: role._id,
-      password: hashedPassword
+      password: hashedPassword,
+      storage_limit: globalStorageLimitMB,
+      is_verified: false,
+      phone_verified: false
     });
+
+    const otp = OTPService.generateOTP();
+    const hashedOTP = await OTPService.hashOTP(otp);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    await OTPLog.create({
+      user_id: newUser._id,
+      email: normalizedEmail,
+      otp: hashedOTP,
+      channel: 'whatsapp',
+      whatsapp_count: 1,
+      expires_at: expiresAt,
+      last_sent_at: new Date()
+    });
+
+    const whatsappResult = await OTPService.sendWhatsAppOTP(countryCode, phone, otp);
+    if (!whatsappResult) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send WhatsApp OTP. Please try again later.'
+      });
+    }
 
     try {
       const user = await User.findById(newUser._id).populate('role_id');
@@ -263,7 +293,8 @@ export const register = async (req, res) => {
               current_period_start: new Date(),
               current_period_end: trialEndsAt,
               trial_ends_at: trialEndsAt,
-              started_at: new Date()
+              started_at: new Date(),
+              features: trialPlan.features
             });
           } else {
             console.warn('Free trial enabled but no active "free Trial" plan found.');
@@ -278,7 +309,9 @@ export const register = async (req, res) => {
       success: true,
       message: `${role.name} registered successfully`,
       data: {
-        redirect: '/login'
+        redirect: '/verify-signup-otp',
+        user_id: newUser._id,
+        identifier: normalizedEmail
       }
     });
   } catch (error) {
@@ -741,7 +774,9 @@ export const getProfile = async (req, res) => {
         country_code: user.country_code,
         note: user.note,
         role: user.role_id?.name || 'user',
-        status: user.status
+        status: user.status,
+        storage_limit: `${user.storage_limit || 0} MB`,
+        storage_used: `${parseFloat(((user.storage_used || 0) / (1024 * 1024)).toFixed(2))} MB`
       }
     });
   } catch (error) {
@@ -923,6 +958,189 @@ export const getPublicRoles = async (req, res) => {
   }
 };
 
+export const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    try {
+      const activeWabas = await WhatsappWaba.find({ user_id: userId, deleted_at: null });
+      for (const waba of activeWabas) {
+        try {
+          await UnifiedWhatsAppService.disconnectWhatsApp(userId, waba.provider, waba._id);
+        } catch (err) {
+          console.error(`Failed to disconnect WABA ${waba._id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching/disconnecting WABAs:', err.message);
+    }
+
+    await WhatsappConnection.deleteMany({ user_id: userId });
+    await WhatsappWaba.deleteMany({ user_id: userId });
+
+    await Subscription.updateMany(
+      { user_id: userId, deleted_at: null },
+      { $set: { deleted_at: now, status: 'cancelled', cancelled_at: now } }
+    );
+
+    user.deleted_at = now;
+    user.status = false;
+    await user.save();
+
+    await Session.deleteMany({ user_id: userId });
+
+    await OTPLog.deleteMany({ email: user.email });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error in deleteAccount:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete account',
+      error: error.message
+    });
+  }
+};
+
+export const resendSignUpOTP = async (req, res) => {
+  try {
+    const { identifier, channel } = req.body;
+    if (!identifier || !channel) {
+      return res.status(400).json({ success: false, message: 'Identifier and channel are required' });
+    }
+
+    if (!['email', 'whatsapp'].includes(channel)) {
+      return res.status(400).json({ success: false, message: 'Invalid channel' });
+    }
+
+    const validation = validateLoginIdentifier(identifier);
+    if (!validation.isValid) return res.status(400).json({ success: false, message: validation.message });
+
+    const user = await findUserByIdentifier(validation.normalizedValue, validation.type);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const lastOTP = await OTPLog.findOne({ user_id: user._id }).sort({ created_at: -1 });
+
+    if (lastOTP && (Date.now() - new Date(lastOTP.last_sent_at).getTime() < 60000)) {
+      return res.status(429).json({
+        success: false,
+        message: 'Please wait 60 seconds before requesting another OTP'
+      });
+    }
+
+    let whatsappCount = lastOTP ? lastOTP.whatsapp_count : 0;
+    let emailCount = lastOTP ? lastOTP.email_count : 0;
+
+    if (channel === 'whatsapp' && whatsappCount >= 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum WhatsApp OTP limit reached. Please use Email verification.'
+      });
+    }
+
+    const otp = OTPService.generateOTP();
+    const hashedOTP = await OTPService.hashOTP(otp);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    if (channel === 'whatsapp') whatsappCount++;
+    if (channel === 'email') emailCount++;
+
+    await OTPLog.create({
+      user_id: user._id,
+      email: user.email,
+      otp: hashedOTP,
+      channel: channel,
+      whatsapp_count: whatsappCount,
+      email_count: emailCount,
+      expires_at: expiresAt,
+      last_sent_at: new Date()
+    });
+
+    let sent = false;
+    if (channel === 'whatsapp') {
+      sent = await OTPService.sendWhatsAppOTP(user.country_code, user.phone, otp);
+    } else {
+      sent = await OTPService.sendEmailOTP(user.email, otp);
+    }
+
+    if (!sent) {
+      return res.status(500).json({
+        success: false,
+        message: `Failed to send OTP via ${channel}. Please try again later.`
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `OTP resent successfully via ${channel}`
+    });
+  } catch (error) {
+    console.error('Error resending signup OTP:', error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
+export const verifySignUpOTP = async (req, res) => {
+  try {
+    const { identifier, otp } = req.body;
+    if (!identifier || !otp) {
+      return res.status(400).json({ success: false, message: 'Identifier and OTP are required' });
+    }
+
+    const validation = validateLoginIdentifier(identifier);
+    if (!validation.isValid) return res.status(400).json({ success: false, message: validation.message });
+
+    const user = await findUserByIdentifier(validation.normalizedValue, validation.type);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const otpLog = await OTPLog.findOne({
+      user_id: user._id,
+      verified: false
+    }).sort({ created_at: -1 });
+
+    if (!otpLog) return res.status(400).json({ success: false, message: 'No pending OTP found' });
+
+    if (new Date() > otpLog.expires_at) {
+      await OTPLog.findByIdAndDelete(otpLog._id);
+      return res.status(400).json({ success: false, message: 'OTP has expired' });
+    }
+
+    const isValid = await OTPService.verifyOTP(otp, otpLog.otp);
+    if (!isValid) return res.status(400).json({ success: false, message: 'Invalid OTP' });
+
+    otpLog.verified = true;
+    await otpLog.save();
+
+    user.is_verified = true;
+    if (otpLog.channel === 'email') user.email_verified = true;
+    if (otpLog.channel === 'whatsapp') user.phone_verified = true;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Account verified successfully',
+      data: {
+        redirect: '/login',
+      }
+    });
+  } catch (error) {
+    console.error('Error verifying signup OTP:', error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
 export default {
   register,
   login,
@@ -936,5 +1154,8 @@ export default {
   updateProfile,
   getMyPermissions,
   getPublicRoles,
-  resetPasswordViaToken
+  resetPasswordViaToken,
+  deleteAccount,
+  resendSignUpOTP,
+  verifySignUpOTP
 };

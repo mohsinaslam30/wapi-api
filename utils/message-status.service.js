@@ -142,7 +142,10 @@ export const updateWhatsAppStatus = async (waMessageId, status, timestamp = null
         }
         return null;
       }
-      throw new Error('Message not found for WhatsApp ID: ' + waMessageId);
+
+  
+      console.warn(`[StatusWebhook] Message not found for WhatsApp ID: ${waMessageId} with status: ${status}`);
+      return null;
     }
 
     try {

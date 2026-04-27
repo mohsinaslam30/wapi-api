@@ -8,7 +8,9 @@ import {
   updateRazorpaySettings,
   getRazorpaySettings,
   updatePayPalSettings,
-  getPayPalSettings
+  getPayPalSettings,
+  updateGoogleSettings,
+  getGoogleSettings
 } from "../controllers/setting.controller.js";
 import { authenticateUser, authorizeAdmin, authenticate } from "../middlewares/auth.js";
 import { uploader } from "../utils/upload.js";
@@ -54,5 +56,10 @@ router
   .route("/paypal")
   .get(checkPermission('view.settings'), getPayPalSettings)
   .put(checkPermission('update.settings'), updatePayPalSettings);
+
+router
+  .route("/google")
+  .get(checkPermission('view.settings'), getGoogleSettings)
+  .put(checkPermission('update.settings'), updateGoogleSettings);
 
 export default router;

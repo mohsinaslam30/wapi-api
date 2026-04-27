@@ -7,6 +7,7 @@ import {
   getWhatsAppTypeFromMime,
   getWhatsAppMediaUrl
 } from '../../../utils/uploadMediaToWhatsapp.js';
+import { saveBufferLocally, getExtension } from '../../../utils/whatsapp-message-handler.js';
 
 const WHATSAPP_API_VERSION = 'v22.0';
 const WHATSAPP_GRAPH_API_APP_URL = 'https://graph.facebook.com';
@@ -25,8 +26,8 @@ const MESSAGE_TYPES = {
 
 export default class BusinessAPIProvider extends BaseProvider {
 
-  buildWhatsAppPayload(params) {
-    const { recipientNumber, messageType, messageText, mediaId, mediaUrl, fileName, replyMessageId, reactionMessageId, reactionEmoji } = params;
+  async buildWhatsAppPayload(params) {
+    const { recipientNumber, messageType, messageText, mediaId, mediaUrl, fileName, replyMessageId, reactionMessageId, reactionEmoji, isVoiceNote } = params;
 
     const payload = {
       messaging_product: 'whatsapp',
@@ -63,8 +64,20 @@ export default class BusinessAPIProvider extends BaseProvider {
 
       case MESSAGE_TYPES.AUDIO:
         payload.audio = {};
-        if (mediaId) payload.audio.id = mediaId;
-        else if (mediaUrl) payload.audio.link = mediaUrl;
+        if (mediaId) {
+          payload.audio.id = mediaId;
+          console.log('[BusinessAPI] Audio payload using media ID:', mediaId);
+        } else if (mediaUrl) {
+          payload.audio.link = mediaUrl;
+          console.log('[BusinessAPI] Audio payload using media URL:', mediaUrl);
+        } else {
+          console.error('[BusinessAPI] Audio payload has NO media ID or URL!');
+        }
+
+        if (isVoiceNote) {
+          payload.audio.voice = true;
+          console.log('[BusinessAPI] Voice note flag set to true');
+        }
         break;
 
       case MESSAGE_TYPES.DOCUMENT:
@@ -155,7 +168,32 @@ export default class BusinessAPIProvider extends BaseProvider {
         };
 
         if (templateComponents && templateComponents.length > 0) {
-          payload.template.components = templateComponents;
+          const resolvedComponents = await Promise.all(templateComponents.map(async (comp) => {
+            if (comp.type !== 'carousel' || !comp.cards) return comp;
+            const resolvedCards = await Promise.all(comp.cards.map(async (card) => {
+              const resolvedCardComponents = await Promise.all((card.components || []).map(async (cardComp) => {
+                if (cardComp.type !== 'header') return cardComp;
+                const resolvedParams = await Promise.all((cardComp.parameters || []).map(async (p) => {
+                  if (!p._uploadedFile) return p;
+                  const file = p._uploadedFile;
+                  const mediaId = await uploadMediaToWhatsApp({
+                    phone_number_id: params.phone_number_id,
+                    access_token: params.access_token,
+                    buffer: file.buffer,
+                    mime_type: file.mimetype,
+                    filename: file.originalname
+                  });
+                  const { _uploadedFile, ...rest } = p;
+                  rest[p.type] = { id: mediaId };
+                  return rest;
+                }));
+                return { ...cardComp, parameters: resolvedParams };
+              }));
+              return { ...card, components: resolvedCardComponents };
+            }));
+            return { ...comp, cards: resolvedCards };
+          }));
+          payload.template.components = resolvedComponents;
         }
 
         console.log('Template payload being sent to WhatsApp:', JSON.stringify(payload, null, 2));
@@ -177,7 +215,7 @@ export default class BusinessAPIProvider extends BaseProvider {
 
   async sendWhatsAppAPIMessage(params) {
     const { phone_number_id, access_token, payload } = params;
-    console.log("phone_number_id" , phone_number_id);
+    console.log("phone_number_id", phone_number_id);
     const apiUrl = `${WHATSAPP_GRAPH_API_APP_URL}/${WHATSAPP_API_VERSION}/${phone_number_id}/messages`;
 
     console.log('Sending WhatsApp API Payload:', JSON.stringify(payload, null, 2));
@@ -201,25 +239,77 @@ export default class BusinessAPIProvider extends BaseProvider {
     return responseData;
   }
 
-  async processMediaUpload(params) {
+  async processMediaUpload(params, userId = null) {
     const { file, phone_number_id, access_token } = params;
 
     if (!file) {
-      return { mediaId: null, mediaUrl: null, messageType: MESSAGE_TYPES.TEXT };
+      return { mediaId: null, localPath: null, messageType: MESSAGE_TYPES.TEXT };
     }
 
     const messageType = getWhatsAppTypeFromMime(file.mimetype);
+    const isVoiceNote = file.mimetype && file.mimetype.includes('audio/ogg');
+
+    let uploadMimeType = file.mimetype;
+    if (isVoiceNote) {
+      if (!file.mimetype.includes('codecs=opus') && !file.mimetype.includes('opus')) {
+        console.warn('[BusinessAPI] OGG file without Opus codec detected. WhatsApp may reject it.');
+        console.warn('[BusinessAPI] File MIME type:', file.mimetype);
+        uploadMimeType = 'audio/ogg; codecs=opus';
+      }
+    }
+
+    let buffer = file.buffer;
+    if (!buffer && file.path) {
+      try {
+        if (file.path.startsWith('http')) {
+          const response = await axios.get(file.path, { responseType: 'arraybuffer' });
+          buffer = Buffer.from(response.data);
+        } else {
+          buffer = fs.readFileSync(path.join(process.cwd(), file.path));
+        }
+      } catch (err) {
+        console.error('[BusinessAPI] Error reading file for buffer:', err.message);
+      }
+    }
+
+    if (!buffer) {
+      throw new Error("Could not retrieve file buffer for WhatsApp upload.");
+    }
+
+    let localPath = null;
+    try {
+      localPath = await saveBufferLocally(buffer, file.mimetype, messageType, userId);
+    } catch (saveErr) {
+      console.error('[BusinessAPI] Error saving media:', saveErr.message);
+    }
 
     const mediaId = await uploadMediaToWhatsApp({
       phone_number_id: phone_number_id,
       access_token: access_token,
-      buffer: file.buffer,
+      buffer: buffer,
       mime_type: file.mimetype,
       filename: file.originalname
     });
-    const mediaUrl = await getWhatsAppMediaUrl(mediaId, access_token);
 
-    return { mediaId, mediaUrl, messageType };
+    return { mediaId, localPath, messageType, isVoiceNote };
+  }
+
+
+  getPublicMediaUrl(filePath) {
+    if (!filePath) return null;
+
+    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      return filePath;
+    }
+
+    const appUrl = process.env.APP_URL || '';
+    if (appUrl) {
+      const cleanPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
+      return `${appUrl}${cleanPath}`;
+    }
+
+    console.warn('[BusinessAPI] APP_URL not set, media URL may not be accessible:', filePath);
+    return filePath;
   }
 
   async sendMessage(userId, params, connection = null) {
@@ -278,21 +368,46 @@ export default class BusinessAPIProvider extends BaseProvider {
 
     let mediaId = null;
     let fileMediaUrl = null;
+    let localFilePath = null;
+    let isVoiceNote = false;
     if (file && messageType !== 'interactive') {
       if (file.buffer) {
+        console.log('[BusinessAPI] Uploading media file with buffer:', {
+          mimetype: file.mimetype,
+          originalname: file.originalname,
+          size: file.size || file.buffer.length
+        });
         const mediaResult = await this.processMediaUpload({
           file,
           phone_number_id,
           access_token
-        });
+        }, userId);
         mediaId = mediaResult.mediaId;
-        fileMediaUrl = mediaResult.mediaUrl;
+        localFilePath = mediaResult.localPath;
+        fileMediaUrl = null;
+        isVoiceNote = mediaResult.isVoiceNote || false;
+        console.log('[BusinessAPI] Media upload result:', {
+          mediaId,
+          localFilePath,
+          isVoiceNote,
+          messageType: mediaResult.messageType
+        });
       } else if (file.url) {
-        fileMediaUrl = file.url;
+        console.log('[BusinessAPI] Using media URL instead of buffer:', file.url);
+        fileMediaUrl = this.getPublicMediaUrl(file.url);
       }
     }
 
-    const finalMediaUrl = fileMediaUrl || mediaUrl;
+    const finalMediaUrl = fileMediaUrl || this.getPublicMediaUrl(mediaUrl);
+
+    console.log('[BusinessAPI] Final media parameters:', {
+      mediaId,
+      finalMediaUrl,
+      messageType,
+      isVoiceNote,
+      willUseMediaId: !!mediaId,
+      willUseUrl: !mediaId && !!finalMediaUrl
+    });
 
     let whatsappPayload;
 
@@ -404,7 +519,7 @@ export default class BusinessAPIProvider extends BaseProvider {
     }
 
     else {
-      whatsappPayload = this.buildWhatsAppPayload({
+      whatsappPayload = await this.buildWhatsAppPayload({
         recipientNumber,
         messageType,
         messageText,
@@ -419,7 +534,10 @@ export default class BusinessAPIProvider extends BaseProvider {
         templateComponents: params.templateComponents,
         replyMessageId: replyMessageId,
         reactionMessageId: reactionMessageId,
-        reactionEmoji: reactionEmoji
+        isVoiceNote: isVoiceNote,
+        reactionEmoji: reactionEmoji,
+        phone_number_id,
+        access_token
       });
     }
 
@@ -471,7 +589,7 @@ export default class BusinessAPIProvider extends BaseProvider {
         contact_id: contact?._id || params.contactId,
         content: contentToStore,
         message_type: messageType,
-        file_url: finalMediaUrl,
+        file_url: localFilePath || finalMediaUrl || null,
         file_type: file?.mimetype || null,
         from_me: true,
         direction: 'outbound',
@@ -543,6 +661,7 @@ export default class BusinessAPIProvider extends BaseProvider {
         path: 'template_id'
       })
       .populate('submission_id')
+      .populate('user_id', 'name')
       .lean();
 
     let canChat = true;
@@ -707,33 +826,31 @@ export default class BusinessAPIProvider extends BaseProvider {
       }
     }
 
-    const updateOps = [
-      WhatsappWaba.findOneAndUpdate(
-        { _id: connection._id || connection.id, user_id: userId },
-        { is_active: false, connection_status: 'disconnected', deleted_at: new Date() }
+    const deleteOps = [
+      WhatsappWaba.findOneAndDelete(
+        { _id: connection._id || connection.id, user_id: userId }
       )
     ];
 
     if (phone_number_id) {
-      updateOps.push(
-        WhatsappConnection.findOneAndUpdate(
-          { phone_number_id: phone_number_id, user_id: userId },
-          { is_active: false, deleted_at: new Date() }
+      deleteOps.push(
+        WhatsappConnection.findOneAndDelete(
+          { phone_number_id: phone_number_id, user_id: userId }
         ),
-        WhatsappPhoneNumber.updateMany(
+        WhatsappPhoneNumber.deleteMany(
           {
             $or: [
               { waba_id: connection._id || connection.id },
               { phone_number_id: phone_number_id }
             ],
             user_id: userId
-          },
-          { deleted_at: new Date(), is_active: false }
+          }
         )
       );
     }
 
-    await Promise.all(updateOps);
+    await Promise.all(deleteOps);
+
 
     return { success: true };
   }

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { ShortLink } from '../models/index.js';
+import { ShortLink, User } from '../models/index.js';
 import QRCode from 'qrcode';
 
 export const createShortLink = async (req, res) => {
@@ -124,10 +124,18 @@ export const getShortLinks = async (req, res) => {
         }
 
         if (search) {
+            const regex = { $regex: search, $options: 'i' };
+            const matchingUsers = await User.find({
+                $or: [{ name: regex }, { email: regex }],
+                deleted_at: null
+            }).select('_id');
+            const userIds = matchingUsers.map(u => u._id);
+
             query.$or = [
-                { mobile: { $regex: search, $options: 'i' } },
-                { first_message: { $regex: search, $options: 'i' } },
-                { short_code: { $regex: search, $options: 'i' } },
+                { mobile: regex },
+                { first_message: regex },
+                { short_code: regex },
+                { user_id: { $in: userIds } }
             ];
         }
 

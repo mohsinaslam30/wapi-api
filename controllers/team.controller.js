@@ -394,6 +394,8 @@ export const updateTeam = async (req, res) => {
     try {
         const { id } = req.params;
         const { name, description, permissions, status } = req.body;
+
+        console.log("permissions" , permissions);
         const userId = req.user.id;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -427,11 +429,12 @@ export const updateTeam = async (req, res) => {
             const allowedRolePermissions = await RolePermission.find({ role_id: userDoc.role_id._id }).populate('permission_id').lean();
             const allowedSlugs = allowedRolePermissions.filter(rp => rp.permission_id).map(rp => rp.permission_id.slug);
 
+            console.log("allowedSlugs" , allowedSlugs);
             const role = userDoc.role_id;
             const unauthorizedPermissions = role?.name !== 'super_admin'
                 ? permissions.filter(p => !allowedSlugs.includes(p))
                 : [];
-
+            console.log("unauthorizedPermissions" , unauthorizedPermissions)
             if (unauthorizedPermissions.length > 0) {
                 return res.status(403).json({
                     success: false,

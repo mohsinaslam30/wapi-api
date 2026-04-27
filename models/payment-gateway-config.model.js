@@ -1,15 +1,12 @@
 import mongoose from 'mongoose';
 
 const credentialsSchema = new mongoose.Schema({
-  // Razorpay
   key_id: { type: String },
   key_secret: { type: String },
 
-  // Stripe
   publishable_key: { type: String },
   secret_key: { type: String },
 
-  // PayPal
   client_id: { type: String },
   client_secret: { type: String },
   mode: { type: String, enum: ['sandbox', 'live'], default: 'live' }
@@ -35,7 +32,6 @@ const paymentGatewayConfigSchema = new mongoose.Schema({
 
   credentials: { type: credentialsSchema, required: true },
 
-  // Auto-filled on connect via gateway API
   webhook_id: { type: String },
   webhook_secret: { type: String },
 

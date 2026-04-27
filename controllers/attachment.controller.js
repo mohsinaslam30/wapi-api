@@ -1,6 +1,7 @@
-import { Attachment } from '../models/index.js';
+import { Attachment, User, Setting } from '../models/index.js';
 import fs from 'fs';
 import path from 'path';
+import { deleteFile } from '../utils/aws-storage.js';
 
 const SORT_ORDER = {
   ASC: 1,
@@ -43,7 +44,10 @@ const buildSearchQuery = (searchTerm) => {
   return {
     $or: [
       { fileName: { $regex: sanitizedSearch, $options: 'i' } },
-      { description: { $regex: sanitizedSearch, $options: 'i' } }
+      { description: { $regex: sanitizedSearch, $options: 'i' } },
+      { fileType: { $regex: sanitizedSearch, $options: 'i' } },
+      { mimeType: { $regex: sanitizedSearch, $options: 'i' } },
+      { folder: { $regex: sanitizedSearch, $options: 'i' } }
     ]
   };
 };
@@ -63,8 +67,9 @@ export const createAttachment = async (req, res) => {
     const attachments = [];
 
     for (const file of req.files) {
-      const relativePath = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
-      const absoluteUrl = `${req.protocol}://${req.get('host')}${relativePath}`;
+      const isS3 = file.path.startsWith('http');
+      const relativePath = isS3 ? file.path : `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+      const absoluteUrl = isS3 ? file.path : `${req.protocol}://${req.get('host')}${relativePath}`;
 
       const attachmentData = {
         fileName: file.originalname,
@@ -84,6 +89,8 @@ export const createAttachment = async (req, res) => {
       }
 
       const attachment = await Attachment.create(attachmentData);
+      
+      await User.findByIdAndUpdate(userId, { $inc: { storage_used: attachment.fileSize } });
 
       attachments.push({
         ...attachment.toObject(),
@@ -299,12 +306,15 @@ export const deleteAttachment = async (req, res) => {
       });
     }
 
-    const filePath = path.join(process.cwd(), 'uploads', path.basename(attachment.fileUrl));
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    await deleteFile(attachment.fileUrl);
 
     await Attachment.deleteOne({ _id: id });
+
+    const setting = await Setting.findOne().select('restore_storage_on_delete').lean();
+    const restoreStorage = setting?.restore_storage_on_delete !== false;
+    if (restoreStorage) {
+      await User.findByIdAndUpdate(userId, { $inc: { storage_used: -attachment.fileSize } });
+    }
 
     res.status(200).json({
       success: true,
@@ -343,20 +353,21 @@ export const bulkDeleteAttachments = async (req, res) => {
     );
 
     for (const attachment of attachments) {
-      const absolutePath = path.join(
-        process.cwd(),
-        attachment.fileUrl.replace(/^\//, '')
-      );
-
-      if (fs.existsSync(absolutePath)) {
-        fs.unlinkSync(absolutePath);
-      }
+      await deleteFile(attachment.fileUrl);
     }
 
     const deleteResult = await Attachment.deleteMany({
       _id: { $in: foundIds },
       createdBy: userId
     });
+
+    const setting = await Setting.findOne().select('restore_storage_on_delete').lean();
+    const restoreStorage = setting?.restore_storage_on_delete !== false;
+    
+    if (restoreStorage) {
+      const totalDeletedSize = attachments.reduce((acc, curr) => acc + curr.fileSize, 0);
+      await User.findByIdAndUpdate(userId, { $inc: { storage_used: -totalDeletedSize } });
+    }
 
     const response = {
       success: true,

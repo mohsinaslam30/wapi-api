@@ -11,7 +11,8 @@ export const getImportJobs = async (req, res) => {
             limit = 10,
             sort_by = 'created_at',
             sort_order = 'desc',
-            status
+            status,
+            search
         } = req.query;
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -24,6 +25,10 @@ export const getImportJobs = async (req, res) => {
 
         if (status) {
             query.status = status;
+        }
+
+        if (search) {
+            query.original_filename = { $regex: search, $options: 'i' };
         }
 
         const importJobs = await ImportJob.find(query)

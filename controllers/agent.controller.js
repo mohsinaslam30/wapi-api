@@ -1,6 +1,7 @@
 import { User, Team, Role } from '../models/index.js';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import * as funnelService from '../services/funnel.service.js';
 
 
 const DEFAULT_PAGE = 1;
@@ -55,12 +56,15 @@ const buildSearchQuery = (searchTerm) => {
     return {
         $or: [
             { name: { $regex: sanitizedSearch, $options: 'i' } },
-            { email: { $regex: sanitizedSearch, $options: 'i' } }
+            { email: { $regex: sanitizedSearch, $options: 'i' } },
+            { country_code: { $regex: sanitizedSearch, $options: 'i' } },
+            { phone: { $regex: sanitizedSearch, $options: 'i' } },
+            { 'team_id.name': { $regex: sanitizedSearch, $options: 'i' } }
         ]
     };
 };
 
-const validateAgentData = (data) => {
+const validateAgentData = (data, isUpdate = false) => {
     const { name, email, password, country_code, phone, team_id } = data;
 
     if (!name || name.trim() === '') {
@@ -77,7 +81,7 @@ const validateAgentData = (data) => {
         };
     }
 
-    if (!password || password.trim() === '') {
+    if (!isUpdate && (!password || password.trim() === '')) {
         return {
             isValid: false,
             message: 'Password is required and cannot be empty'
@@ -95,6 +99,13 @@ const validateAgentData = (data) => {
         return {
             isValid: false,
             message: 'Phone is required and cannot be empty'
+        };
+    }
+
+    if (phone.trim().length < 6 || phone.trim().length > 15) {
+        return {
+            isValid: false,
+            message: 'Phone must be between 6 and 15 digits'
         };
     }
 
@@ -192,7 +203,7 @@ export const createAgent = async (req, res) => {
 
         const { name, email, password, note, country_code, phone, team_id, status, is_phoneno_hide } = req.body;
 
-        const validation = validateAgentData({ name, email, password, country_code, phone, team_id });
+        const validation = validateAgentData({ name, email, password, country_code, phone, team_id }, false);
         if (!validation.isValid) {
             return res.status(400).json({
                 success: false,
@@ -273,7 +284,7 @@ export const createAgent = async (req, res) => {
 export const updateAgent = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, email, password, note, country_code, phone, team_id, status, is_phoneno_hide } = req.body;
+        const { name, email, note, country_code, phone, team_id, status, is_phoneno_hide, password } = req.body;
 
         if (!id || !mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({
@@ -311,7 +322,7 @@ export const updateAgent = async (req, res) => {
             });
         }
 
-        const validation = validateAgentData({ name, email, password, note, country_code, phone, status, team_id });
+        const validation = validateAgentData({ name, email, note, country_code, phone, status, team_id, password }, true);
         if (!validation.isValid) {
             return res.status(400).json({
                 success: false,
@@ -339,11 +350,9 @@ export const updateAgent = async (req, res) => {
                 message: 'AGENT with this email or phone already exists'
             });
         }
-        const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
 
         existingAgent.name = name.trim();
         existingAgent.email = email.trim();
-        existingAgent.password = hashedPassword;
         existingAgent.note = note.trim();
         existingAgent.country_code = country_code;
         existingAgent.phone = phone.trim();
@@ -351,6 +360,10 @@ export const updateAgent = async (req, res) => {
         existingAgent.team_id = (team_id && mongoose.Types.ObjectId.isValid(team_id)) ? team_id : existingAgent.team_id;
         existingAgent.created_by = existingAgent.created_by || req.user._id;
         existingAgent.role_id = role._id;
+
+        if (password && password.trim() !== '') {
+            existingAgent.password = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+        }
 
         if (status !== undefined) {
             existingAgent.status = status;
@@ -609,6 +622,57 @@ export const getAgentById = async (req, res) => {
     }
 };
 
+export const getAgentFunnels = async (req, res) => {
+    try {
+        const userId = req.user.owner_id;
+        const funnels = await funnelService.getFunnelsByType(userId, 'agent');
+        res.status(200).json({ success: true, data: funnels });
+    } catch (error) {
+        console.error("Error fetching agent funnels:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+export const getAgentKanbanStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.owner_id;
+        const status = await funnelService.getItemStatus(id, userId);
+        res.status(200).json({ success: true, data: status });
+    } catch (error) {
+        console.error("Error fetching agent kanban status:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+export const handleAgentKanbanAction = async (req, res) => {
+    try {
+        const userId = req.user.owner_id;
+        const { globalItemId, actions } = req.body;
+
+        let result;
+        if (actions && Array.isArray(actions)) {
+            result = await funnelService.processBulkActions({
+                globalItemId,
+                actions,
+                userId,
+                changedBy: req.user.id
+            });
+        } else {
+            result = await funnelService.processAction({
+                ...req.body,
+                userId,
+                changedBy: req.user.id
+            });
+        }
+
+        res.status(200).json({ success: true, data: result, message: "Action processed successfully" });
+    } catch (error) {
+        console.error("Error processing agent kanban action:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
 export default {
     getAllAgents,
     createAgent,
@@ -616,5 +680,8 @@ export default {
     updateAgentStatus,
     deleteAgent,
     getAgentById,
-    updatePhonenoStatus
+    updatePhonenoStatus,
+    getAgentFunnels,
+    getAgentKanbanStatus,
+    handleAgentKanbanAction
 };

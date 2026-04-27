@@ -2,6 +2,7 @@ import { Page } from '../models/index.js';
 import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
+import { deleteFile } from '../utils/aws-storage.js';
 
 const SORT_ORDER = {
     ASC: 1,
@@ -80,16 +81,17 @@ const createCaseInsensitivePattern = (text) => {
 };
 
 
-const cleanupFiles = (files) => {
+const cleanupFiles = async (files) => {
     if (!files) return;
-
+    const fileList = [];
     Object.values(files).forEach(fileArray => {
         fileArray.forEach(file => {
-            if (file?.path && fs.existsSync(file.path)) {
-                fs.unlinkSync(file.path);
-            }
+            if (file?.path) fileList.push(file.path);
         });
     });
+    for (const filePath of fileList) {
+        await deleteFile(filePath);
+    }
 };
 
 export const createPage = async (req, res) => {
@@ -141,7 +143,7 @@ export const createPage = async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating page:', error);
-        cleanupFiles(req.files);
+        await cleanupFiles(req.files);
         return res.status(500).json({
             success: false,
             message: 'Failed to create page',
@@ -222,19 +224,19 @@ export const updatePage = async (req, res) => {
         const updateData = req.body;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(400).json({ success: false, message: 'Invalid page ID' });
         }
 
         const page = await Page.findOne({ _id: id, deleted_at: null });
         if (!page) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(404).json({ success: false, message: 'Page not found' });
         }
 
         const validation = validatePageData(updateData);
         if (!validation.isValid) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(400).json({
                 success: false,
                 message: 'Page validation failed',
@@ -249,7 +251,7 @@ export const updatePage = async (req, res) => {
         if (newSlug !== page.slug) {
             const existingPage = await Page.findOne({ slug: createCaseInsensitivePattern(newSlug), _id: { $ne: id }, deleted_at: null });
             if (existingPage) {
-                cleanupFiles(req.files);
+                await cleanupFiles(req.files);
                 return res.status(409).json({
                     success: false,
                     message: 'A page with this slug already exists'
@@ -273,10 +275,7 @@ export const updatePage = async (req, res) => {
         await page.save();
 
         if (req.file && oldMetaImage && oldMetaImage !== page.meta_image) {
-            const oldPath = path.join(process.cwd(), oldMetaImage);
-            if (fs.existsSync(oldPath)) {
-                fs.unlinkSync(oldPath);
-            }
+            await deleteFile(oldMetaImage);
         }
 
         return res.status(200).json({
@@ -286,7 +285,7 @@ export const updatePage = async (req, res) => {
         });
     } catch (error) {
         console.error('Error updating page:', error);
-        cleanupFiles(req.files);
+        await cleanupFiles(req.files);
         return res.status(500).json({
             success: false,
             message: 'Failed to update page',
@@ -316,10 +315,7 @@ export const deletePages = async (req, res) => {
 
         for (const page of pages) {
             if (page.meta_image) {
-                const imgPath = path.join(process.cwd(), page.meta_image);
-                if (fs.existsSync(imgPath)) {
-                    fs.unlinkSync(imgPath);
-                }
+                await deleteFile(page.meta_image);
             }
         }
 

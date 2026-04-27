@@ -2,6 +2,8 @@ import { Language, Setting } from '../models/index.js';
 import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
+import { deleteFile } from '../utils/aws-storage.js';
 
 const SORT_ORDER = {
     ASC: 1,
@@ -140,10 +142,17 @@ const writeTranslationFile = (filePath, json) => {
     }
 };
 
-const processTranslationUpload = (files, fieldName, defaultData) => {
+const processTranslationUpload = async (files, fieldName, defaultData) => {
     if (files && files[fieldName] && files[fieldName][0]) {
         try {
-            const content = fs.readFileSync(files[fieldName][0].path, 'utf8');
+            const filePath = files[fieldName][0].path;
+            let content;
+            if (filePath.startsWith('http')) {
+                const response = await axios.get(filePath);
+                content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+            } else {
+                content = fs.readFileSync(path.join(process.cwd(), filePath), 'utf8');
+            }
             return JSON.parse(content);
         } catch (error) {
             console.error(`Error processing uploaded translation file ${fieldName}:`, error);
@@ -190,7 +199,7 @@ export const createLanguage = async (req, res) => {
 
         const validation = validateLanguageData(languageData);
         if (!validation.isValid) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(400).json({
                 success: false,
                 message: 'Language validation failed',
@@ -203,7 +212,7 @@ export const createLanguage = async (req, res) => {
 
         const existingLanguage = await Language.findOne({ locale: languageLocale, deleted_at: null });
         if (existingLanguage) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(409).json({
                 success: false,
                 message: 'A language with this locale already exists'
@@ -216,13 +225,17 @@ export const createLanguage = async (req, res) => {
         const adminFile = getTranslationFilePath(languageLocale, 'admin');
         const appFile = getTranslationFilePath(languageLocale, 'app');
 
-        const frontContent = processTranslationUpload(req.files, 'front_translation_file', languageData.front_translation_json || englishDefaults.front);
-        const adminContent = processTranslationUpload(req.files, 'admin_translation_file', languageData.admin_translation_json || englishDefaults.admin);
-        const appContent = processTranslationUpload(req.files, 'app_translation_file', languageData.app_translation_json || englishDefaults.app);
+        const frontContent = await processTranslationUpload(req.files, 'front_translation_file', languageData.front_translation_json || englishDefaults.front);
+        const adminContent = await processTranslationUpload(req.files, 'admin_translation_file', languageData.admin_translation_json || englishDefaults.admin);
+        const appContent = await processTranslationUpload(req.files, 'app_translation_file', languageData.app_translation_json || englishDefaults.app);
 
         writeTranslationFile(frontFile, frontContent);
         writeTranslationFile(adminFile, adminContent);
         writeTranslationFile(appFile, appContent);
+
+        if (req.files && req.files.flag && req.files.flag[0]) {
+            flagPath = req.files.flag[0].path;
+        }
 
         if (is_default === true || is_default === 'true') {
             await Language.updateMany({ deleted_at: null }, { $set: { is_default: false } });
@@ -257,14 +270,14 @@ export const createLanguage = async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating language:', error);
-        cleanupFiles(req.files);
+        await cleanupFiles(req.files);
         return res.status(500).json({
             success: false,
             message: 'Failed to create language',
             error: error.message
         });
     } finally {
-        cleanupFiles(req.files);
+        await cleanupFiles(req.files);
     }
 };
 
@@ -354,7 +367,7 @@ export const updateLanguage = async (req, res) => {
         const updateData = req.body;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(400).json({
                 success: false,
                 message: 'Invalid language ID'
@@ -364,7 +377,7 @@ export const updateLanguage = async (req, res) => {
         const language = await Language.findOne({ _id: id, deleted_at: null });
 
         if (!language) {
-            cleanupFiles(req.files);
+            await cleanupFiles(req.files);
             return res.status(404).json({
                 success: false,
                 message: 'Language not found'
@@ -390,7 +403,7 @@ export const updateLanguage = async (req, res) => {
             if (newLocale !== language.locale) {
                 const existingLanguage = await Language.findOne({ locale: newLocale, _id: { $ne: id }, deleted_at: null });
                 if (existingLanguage) {
-                    cleanupFiles(req.files);
+                    await cleanupFiles(req.files);
                     return res.status(409).json({
                         success: false,
                         message: 'A language with this locale already exists'
@@ -414,7 +427,7 @@ export const updateLanguage = async (req, res) => {
 
         if (updateData.is_active !== undefined) {
             if (language.is_default && updateData.is_active === false) {
-                cleanupFiles(req.files);
+                await cleanupFiles(req.files);
                 return res.status(400).json({
                     success: false,
                     message: 'Default language cannot be deactivated. Please change the default language first.'
@@ -425,7 +438,7 @@ export const updateLanguage = async (req, res) => {
 
         if (updateData.is_default === true || updateData.is_default === 'true') {
             if (!language.is_active && updateData.is_active !== true) {
-                cleanupFiles(req.files);
+                await cleanupFiles(req.files);
                 return res.status(400).json({
                     success: false,
                     message: 'A deactivated language cannot be set as default.'
@@ -441,9 +454,9 @@ export const updateLanguage = async (req, res) => {
             }
         }
 
-        const frontContent = processTranslationUpload(req.files, 'front_translation_file', updateData.front_translation_json);
-        const adminContent = processTranslationUpload(req.files, 'admin_translation_file', updateData.admin_translation_json);
-        const appContent = processTranslationUpload(req.files, 'app_translation_file', updateData.app_translation_json);
+        const frontContent = await processTranslationUpload(req.files, 'front_translation_file', updateData.front_translation_json);
+        const adminContent = await processTranslationUpload(req.files, 'admin_translation_file', updateData.admin_translation_json);
+        const appContent = await processTranslationUpload(req.files, 'app_translation_file', updateData.app_translation_json);
 
         if (frontContent !== undefined) writeTranslationFile(language.front_translation_file, frontContent);
         if (adminContent !== undefined) writeTranslationFile(language.admin_translation_file, adminContent);
@@ -452,10 +465,7 @@ export const updateLanguage = async (req, res) => {
         await language.save();
 
         if (req.files && req.files.flag && oldFlagPath && oldFlagPath !== language.flag) {
-            const oldPath = path.join(process.cwd(), oldFlagPath);
-            if (fs.existsSync(oldPath)) {
-                fs.unlinkSync(oldPath);
-            }
+            await deleteFile(oldFlagPath);
         }
 
         return res.status(200).json({
@@ -465,14 +475,14 @@ export const updateLanguage = async (req, res) => {
         });
     } catch (error) {
         console.error('Error updating language:', error);
-        cleanupFiles(req.files);
+        await cleanupFiles(req.files);
         return res.status(500).json({
             success: false,
             message: 'Failed to update language',
             error: error.message
         });
     } finally {
-        cleanupFiles(req.files);
+        await cleanupFiles(req.files);
     }
 };
 

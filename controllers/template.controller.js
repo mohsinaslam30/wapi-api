@@ -4,6 +4,8 @@ import Contact from "../models/contact.model.js";
 import Message from "../models/message.model.js";
 import { AIModel, UserSetting } from "../models/index.js";
 import mongoose from "mongoose";
+import fs from "fs";
+import path from "path";
 import axios from "axios";
 import { getWhatsAppTypeFromMime, getWhatsAppMediaUrl } from "../utils/uploadMediaToWhatsapp.js";
 import { callAIModel as commonCallAIModel } from '../utils/ai-utils.js';
@@ -126,20 +128,36 @@ export const createTemplate = async (req, res) => {
     let header = null;
     if (!isAuthenticationCategory && !isCarouselTemplate) {
       if (uploadedFile) {
-        const handle = await uploadSampleMediaForTemplate({
-          app_id: app_id,
-          access_token,
-          file_name: uploadedFile.originalname,
-          file_size: uploadedFile.size,
-          mime_type: uploadedFile.mimetype,
-          buffer: uploadedFile.buffer,
-        });
-        console.log("handle", handle);
-        header = {
-          format: "media",
-          media_type: getWhatsAppTypeFromMime(uploadedFile.mimetype),
-          handle: handle,
-        };
+        let buffer = uploadedFile.buffer;
+        if (!buffer && uploadedFile.path) {
+          try {
+            if (uploadedFile.path.startsWith('http')) {
+              const response = await axios.get(uploadedFile.path, { responseType: 'arraybuffer' });
+              buffer = Buffer.from(response.data);
+            } else {
+              buffer = fs.readFileSync(path.join(process.cwd(), uploadedFile.path));
+            }
+          } catch (err) {
+            console.error('[TemplateController] Error reading uploaded file:', err.message);
+          }
+        }
+
+        if (buffer) {
+          const handle = await uploadSampleMediaForTemplate({
+            app_id: app_id,
+            access_token,
+            file_name: uploadedFile.originalname,
+            file_size: uploadedFile.size,
+            mime_type: uploadedFile.mimetype,
+            buffer: buffer,
+          });
+          console.log("handle", handle);
+          header = {
+            format: "media",
+            media_type: getWhatsAppTypeFromMime(uploadedFile.mimetype),
+            handle: handle,
+          };
+        }
       }
       if (req.body.header_text) {
         header = {
@@ -154,20 +172,36 @@ export const createTemplate = async (req, res) => {
     if (isCarouselTemplate && cardMediaFiles.length > 0) {
       for (let i = 0; i < cardMediaFiles.length && i < rawCarouselCards.length; i++) {
         const file = cardMediaFiles[i];
-        const handle = await uploadSampleMediaForTemplate({
-          app_id: app_id,
-          access_token,
-          file_name: file.originalname,
-          file_size: file.size,
-          mime_type: file.mimetype,
-          buffer: file.buffer,
-        });
-        const card = rawCarouselCards[i];
-        if (card && card.components) {
-          const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
-          if (headerComp) {
-            headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
-            headerComp.example = { header_handle: [handle] };
+        let buffer = file.buffer;
+        if (!buffer && file.path) {
+          try {
+            if (file.path.startsWith('http')) {
+              const response = await axios.get(file.path, { responseType: 'arraybuffer' });
+              buffer = Buffer.from(response.data);
+            } else {
+              buffer = fs.readFileSync(path.join(process.cwd(), file.path));
+            }
+          } catch (err) {
+            console.error('[TemplateController] Error reading carousel file:', err.message);
+          }
+        }
+
+        if (buffer) {
+          const handle = await uploadSampleMediaForTemplate({
+            app_id: app_id,
+            access_token,
+            file_name: file.originalname,
+            file_size: file.size,
+            mime_type: file.mimetype,
+            buffer: buffer,
+          });
+          const card = rawCarouselCards[i];
+          if (card && card.components) {
+            const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
+            if (headerComp) {
+              headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
+              headerComp.example = { header_handle: [handle] };
+            }
           }
         }
       }
@@ -847,7 +881,13 @@ export const getAllTemplates = async (req, res) => {
     }
 
     if (search) {
-      filter.$or = [{ template_name: { $regex: search, $options: "i" } }, { message_body: { $regex: search, $options: "i" } }];
+      filter.$or = [
+        { template_name: { $regex: search, $options: "i" } },
+        { template_type: { $regex: search, $options: "i" } },
+        { category: { $regex: search, $options: "i" } },
+        { template_category: { $regex: search, $options: "i" } },
+        { status: { $regex: search, $options: "i" } },
+      ];
     }
 
     const templates = await Template.find(filter).sort({ created_at: -1 }).select("-__v").lean();
@@ -912,7 +952,7 @@ export const getTemplatesFromMeta = async (req, res) => {
 export const syncTemplatesFromMeta = async (req, res) => {
   try {
     const userId = req.user.owner_id;
-    const { waba_id, meta_template_ids } = req.body;
+    const { waba_id, meta_template_ids } = req.body || {};
 
     if (!waba_id) {
       return res.status(400).json({
@@ -1003,7 +1043,7 @@ export const syncTemplatesFromMeta = async (req, res) => {
 export const syncTemplatesStatusFromMeta = async (req, res) => {
   try {
     const userId = req.user.owner_id;
-    const { waba_id, template_ids } = req.body;
+    const { waba_id, template_ids } = req.body || {};
 
     if (!waba_id) {
       return res.status(400).json({
@@ -1105,6 +1145,9 @@ const fetchTemplatesFromMeta = async (wabaId, accessToken) => {
   const url = `https://graph.facebook.com/${API_VERSION}/${wabaId}/message_templates`;
 
   const response = await axios.get(url, {
+    params: {
+      fields: "id,name,status,category,language,components,rejected_reason,quality_score",
+    },
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
@@ -1393,7 +1436,11 @@ const metaTemplateToDbDocument = (metaTemplate, wabaId, userId) => {
 export const updateTemplate = async (req, res) => {
   try {
     const { id } = req.params;
-    const {
+    if (!req.body) {
+      return res.status(400).json({ error: "Request body is missing" });
+    }
+
+    let {
       template_name,
       language,
       category,
@@ -1407,7 +1454,34 @@ export const updateTemplate = async (req, res) => {
       code_expiration_minutes,
       otp_code_length,
       otp_buttons,
+      carousel_cards,
+      template_type,
     } = req.body;
+
+    if (typeof carousel_cards === 'string') {
+      try {
+        carousel_cards = JSON.parse(carousel_cards);
+      } catch (e) {
+        console.error("Error parsing carousel_cards:", e);
+        carousel_cards = [];
+      }
+    }
+
+    if (typeof buttons === 'string') {
+      try {
+        buttons = JSON.parse(buttons);
+      } catch (e) {
+        console.error("Error parsing buttons:", e);
+      }
+    }
+
+    if (typeof otp_buttons === 'string') {
+      try {
+        otp_buttons = JSON.parse(otp_buttons);
+      } catch (e) {
+        console.error("Error parsing otp_buttons:", e);
+      }
+    }
 
     let rawVars = variable_examples || variables_example || {};
     console.log("Raw variables from request:", rawVars);
@@ -1457,7 +1531,85 @@ export const updateTemplate = async (req, res) => {
       return res.status(404).json({ error: "WhatsApp WABA not found" });
     }
 
+    const { access_token, whatsapp_business_account_id, app_id } = waba;
+    const normalizedTemplateType = (template_type || template.template_type || "standard").toLowerCase();
+
     const updateData = {};
+
+    const uploadedFile = req.file || (req.files && req.files.file && req.files.file[0]);
+    if (uploadedFile) {
+      let buffer = uploadedFile.buffer;
+      if (!buffer && uploadedFile.path) {
+        try {
+          if (uploadedFile.path.startsWith('http')) {
+            const response = await axios.get(uploadedFile.path, { responseType: 'arraybuffer' });
+            buffer = Buffer.from(response.data);
+          } else {
+            buffer = fs.readFileSync(path.join(process.cwd(), uploadedFile.path));
+          }
+        } catch (err) {
+          console.error('[TemplateController] Error reading uploaded file:', err.message);
+        }
+      }
+
+      if (buffer) {
+        const handle = await uploadSampleMediaForTemplate({
+          app_id: app_id,
+          access_token,
+          file_name: uploadedFile.originalname,
+          file_size: uploadedFile.size,
+          mime_type: uploadedFile.mimetype,
+          buffer: buffer,
+        });
+        updateData.header = {
+          format: "media",
+          media_type: getWhatsAppTypeFromMime(uploadedFile.mimetype),
+          handle: handle,
+        };
+      }
+    }
+
+    const cardMediaFiles = (req.files && req.files.card_media) ? (Array.isArray(req.files.card_media) ? req.files.card_media : [req.files.card_media]) : [];
+    if (["carousel_product", "carousel_media"].includes(normalizedTemplateType) && Array.isArray(carousel_cards)) {
+      if (cardMediaFiles.length > 0) {
+        for (let i = 0; i < cardMediaFiles.length && i < carousel_cards.length; i++) {
+          const file = cardMediaFiles[i];
+          let buffer = file.buffer;
+          if (!buffer && file.path) {
+            try {
+              if (file.path.startsWith('http')) {
+                const response = await axios.get(file.path, { responseType: 'arraybuffer' });
+                buffer = Buffer.from(response.data);
+              } else {
+                buffer = fs.readFileSync(path.join(process.cwd(), file.path));
+              }
+            } catch (err) {
+              console.error('[TemplateController] Error reading carousel file:', err.message);
+            }
+          }
+
+          if (buffer) {
+            const handle = await uploadSampleMediaForTemplate({
+              app_id: app_id,
+              access_token,
+              file_name: file.originalname,
+              file_size: file.size,
+              mime_type: file.mimetype,
+              buffer: buffer,
+            });
+            const card = carousel_cards[i];
+            if (card && card.components) {
+              const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
+              if (headerComp) {
+                headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
+                headerComp.example = { header_handle: [handle] };
+              }
+            }
+          }
+        }
+      }
+      updateData.carousel_cards = carousel_cards;
+    }
 
     if (template_name) updateData.template_name = template_name.toLowerCase();
     if (language) updateData.language = language;
@@ -1673,7 +1825,7 @@ export const deleteTemplate = async (req, res) => {
     const { id } = req.params;
     const ownerId = req.user.owner_id;
     const currentUserId = req.user.id;
-    const { delete_from_meta = true } = req.body;
+    const { delete_from_meta = true } = req.body || {};
 
     const template = await Template.findOne({
       _id: id,
@@ -1915,11 +2067,172 @@ const normalizeJson = (text) => {
 
   return text
     .replace(/\\'/g, "'")
-
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
-
     .replace(/,\s*([}\]])/g, "$1");
+};
+
+export const migrateTemplate = async (req, res) => {
+  try {
+    const userId = req.user.owner_id;
+    const { template_id, destination_waba_id } = req.body;
+
+    if (!template_id || !destination_waba_id) {
+      return res.status(400).json({
+        success: false,
+        error: "template_id and destination_waba_id are required",
+      });
+    }
+
+    const template = await Template.findOne({
+      _id: template_id,
+      user_id: userId,
+      deleted_at: null,
+    });
+
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        error: "Template not found",
+      });
+    }
+
+    const sourceWaba = await WhatsappWaba.findOne({
+      _id: template.waba_id,
+      user_id: userId,
+      deleted_at: null,
+    });
+
+    if (!sourceWaba) {
+      return res.status(404).json({
+        success: false,
+        error: "Source WABA not found",
+      });
+    }
+
+    const destinationWaba = await WhatsappWaba.findOne({
+      $or: [
+        { _id: destination_waba_id },
+        { whatsapp_business_account_id: destination_waba_id }
+      ],
+      user_id: userId,
+      deleted_at: null,
+    });
+
+    if (!destinationWaba) {
+      return res.status(404).json({
+        success: false,
+        error: "Destination WABA not found",
+      });
+    }
+
+    if (String(sourceWaba._id) === String(destinationWaba._id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Source and destination WABAs must be different",
+      });
+    }
+
+
+    if (!sourceWaba.business_id || !destinationWaba.business_id || sourceWaba.business_id !== destinationWaba.business_id) {
+      return res.status(400).json({
+        success: false,
+        error: "Templates can only be migrated between WABAs owned by the same Meta business",
+        details: `Source BM: ${sourceWaba.business_id}, Destination BM: ${destinationWaba.business_id}`
+      });
+    }
+
+
+    const metaTemplates = await fetchTemplatesFromMeta(sourceWaba.whatsapp_business_account_id, sourceWaba.access_token);
+    const metaTemplate = metaTemplates.find((t) => t.name === template.template_name);
+
+    if (!metaTemplate) {
+      return res.status(404).json({
+        success: false,
+        error: "Template not found on Meta",
+      });
+    }
+
+    const { status, quality_score } = metaTemplate;
+    const allowedQualityScores = ["GREEN", "UNKNOWN"];
+
+    const currentQualityScore = (quality_score && typeof quality_score === 'object') ? quality_score.score : quality_score;
+
+    if (status !== "APPROVED") {
+      return res.status(400).json({
+        success: false,
+        error: `Only APPROVED templates are eligible for migration. Current status: ${status}`,
+      });
+    }
+
+    if (!allowedQualityScores.includes(currentQualityScore)) {
+      return res.status(400).json({
+        success: false,
+        error: `Only templates with a quality score of GREEN or UNKNOWN are eligible for migration. Current quality score: ${currentQualityScore}`,
+      });
+    }
+
+    const migrationUrl = `https://graph.facebook.com/${API_VERSION}/${destinationWaba.whatsapp_business_account_id}/migrate_message_templates`;
+    try {
+      if (!template.meta_template_id) {
+        throw new Error("Template does not have a Meta Template ID. Please sync the template first.");
+      }
+
+      const migrationResponse = await axios.post(
+        migrationUrl,
+        {
+          source_waba_id: String(sourceWaba.whatsapp_business_account_id),
+          template_ids: [String(template.meta_template_id)],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${destinationWaba.access_token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      console.log("Meta migration API Success:", migrationResponse.data);
+    } catch (migrationError) {
+      const errorData = migrationError.response?.data;
+      console.error("Meta migration API Error:", JSON.stringify(errorData, null, 2));
+
+
+      return res.status(400).json({
+        success: false,
+        error: "Failed to migrate template on Meta",
+        details: errorData?.error?.message || migrationError.message,
+        meta_error: errorData
+      });
+    }
+
+    const newTemplateData = template.toObject();
+    delete newTemplateData._id;
+    delete newTemplateData.createdAt;
+    delete newTemplateData.updatedAt;
+
+    newTemplateData.waba_id = destinationWaba._id;
+
+    const newLocalTemplate = await Template.create(newTemplateData);
+
+    return res.json({
+      success: true,
+      message: "Template migrated (copied) successfully",
+      data: {
+        new_template_id: newLocalTemplate._id,
+        source_template_id: template._id,
+        template_name: template.template_name,
+        source_waba_id: sourceWaba._id,
+        destination_waba_id: destinationWaba._id,
+      },
+    });
+  } catch (error) {
+    console.error("Error in migrateTemplate:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      details: error.message,
+    });
+  }
 };
 
 export default {
@@ -1932,5 +2245,6 @@ export default {
   suggestTemplate,
   updateTemplate,
   deleteTemplate,
+  migrateTemplate,
   getAdminTemplatesForUsers,
 };

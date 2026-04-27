@@ -31,8 +31,7 @@ const subscriptionSchema = new mongoose.Schema({
         default: Date.now
     },
     current_period_end: {
-        type: Date,
-        required: true
+        type: Date
     },
     expires_at: {
         type: Date,
@@ -146,6 +145,18 @@ const subscriptionSchema = new mongoose.Schema({
         broadcast_messages_used: {
             type: Number,
             default: 0
+        },
+        facebookAds_campaign_used: {
+            type: Number,
+            default: 0
+        },
+        kanban_funnels_used: {
+            type: Number,
+            default: 0
+        },
+        segments_used: {
+            type: Number,
+            default: 0
         }
     },
     auto_renew: {
@@ -191,6 +202,24 @@ const subscriptionSchema = new mongoose.Schema({
     deleted_at: {
         type: Date,
         default: null
+    },
+    features: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null
+    },
+    is_custom: {
+        type: Boolean,
+        default: false
+    },
+    overridden_by: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+    },
+    duration: {
+        type: Number,
+        default: 1,
+        min: 1
     }
 }, {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
@@ -219,11 +248,19 @@ subscriptionSchema.methods.isExpired = function () {
     return new Date() > this.current_period_end;
 };
 
+subscriptionSchema.methods.getFeatureLimit = function (feature, planFeatures) {
+    if (this.features && this.features[feature] !== undefined) {
+        return this.features[feature];
+    }
+    return planFeatures[feature];
+};
+
 subscriptionSchema.methods.canUseFeature = function (feature, planFeatures) {
-    const limit = planFeatures[feature];
+    const limit = this.getFeatureLimit(feature, planFeatures);
     const used = this.usage[`${feature}_used`] || 0;
 
-    if (limit === 0) return true;
+    if (limit === 0 || limit === true) return true;
+    if (limit === false) return false;
 
     return used < limit;
 };

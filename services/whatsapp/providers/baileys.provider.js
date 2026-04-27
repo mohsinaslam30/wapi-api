@@ -97,15 +97,13 @@ export default class BaileysProvider extends BaseProvider {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
+
                 const waba = await WhatsappWaba.findById(wabaId);
 
-
                 if (waba?.connection_status === 'connected') {
-                    console.log(`Ignoring spurious QR for already-connected WABA ${wabaId}`);
-                    return;
-                }
 
-                if (waba && waba.connection_status !== 'qrcode') {
+                    console.log(`Session invalidated for WABA ${wabaId} (was connected). QR required to re-authenticate.`);
+                } else if (waba && waba.connection_status !== 'qrcode') {
                     console.log(`New QR generated for WABA ${wabaId}`);
                 }
 
@@ -115,7 +113,7 @@ export default class BaileysProvider extends BaseProvider {
                     connection_status: 'qrcode'
                 });
 
-                this.emitStatus(wabaId, 'qrcode', { qr_code: qrBase64 });
+                this.emitStatus(wabaId, 'qrcode', { qr_code: qrBase64, session_expired: waba?.connection_status === 'connected' });
             }
 
             if (connection === 'close') {
@@ -143,16 +141,13 @@ export default class BaileysProvider extends BaseProvider {
                         console.log(`Baileys logged out for WABA ${wabaId}. Cleaning up session and chat history...`);
                         try {
                             const phoneDoc = await WhatsappPhoneNumber.findOne({ waba_id: wabaId }).lean();
-                            if (phoneDoc?.display_phone_number) {
-                                const myNum = phoneDoc.display_phone_number;
+                            if (phoneDoc?._id) {
+
                                 const { deletedCount } = await Message.deleteMany({
                                     user_id: userId,
-                                    $or: [
-                                        { sender_number: myNum },
-                                        { recipient_number: myNum }
-                                    ]
+                                    whatsapp_phone_number_id: phoneDoc._id
                                 });
-                                console.log(`Deleted ${deletedCount} messages for number ${myNum} on logout.`);
+                                console.log(`Deleted ${deletedCount} messages for phone ${phoneDoc.display_phone_number} (WABA ${wabaId}) on logout.`);
                             }
                         } catch (delErr) {
                             console.error(`Error deleting messages on logout for WABA ${wabaId}:`, delErr.message);
@@ -312,6 +307,25 @@ export default class BaileysProvider extends BaseProvider {
                 return;
             }
 
+            if (!msg.message) {
+                return;
+            }
+
+            const firstMsgKey = Object.keys(msg.message)[0];
+            const INTERNAL_MSG_TYPES = [
+                'protocolMessage',
+                'senderKeyDistributionMessage',
+                'appStateSyncKeyShare',
+                'appStateSyncKeyRequest',
+                'messageContextInfo',
+                'requestPhoneNumberMessage',
+                'reactionMessage'
+            ];
+            const isInternalType = INTERNAL_MSG_TYPES.slice(0, -1).includes(firstMsgKey); 
+            if (isInternalType) {
+                return;
+            }
+
             const senderJid = msg.key.remoteJidAlt || remoteJid;
 
             if (!senderJid.endsWith('@s.whatsapp.net')) {
@@ -322,6 +336,17 @@ export default class BaileysProvider extends BaseProvider {
             const fromMe = msg.key.fromMe;
             const phone = await WhatsappPhoneNumber.findOne({ waba_id: wabaId });
             const myNumber = phone?.display_phone_number;
+
+
+            if (fromMe) {
+                const sock = this.sockets.get(wabaId.toString());
+                const myJidNumber = sock?.user?.id?.split(':')[0]?.split('@')[0];
+                const isSelfEcho = (myJidNumber && senderNumber === myJidNumber) ||
+                    (myNumber && senderNumber === myNumber);
+                if (isSelfEcho) {
+                    return;
+                }
+            }
 
             const existingMessage = await Message.findOne({ wa_message_id: msg.key.id });
             if (existingMessage) {
@@ -360,12 +385,14 @@ export default class BaileysProvider extends BaseProvider {
                 recipient_number: fromMe ? senderNumber : myNumber,
                 user_id: userId,
                 contact_id: contact._id,
+                whatsapp_phone_number_id: phone?._id || null,
                 content: content,
                 message_type: messageType,
                 file_url: fileUrl,
                 from_me: fromMe,
                 direction: fromMe ? 'outbound' : 'inbound',
                 wa_message_id: msg.key.id,
+                wa_jid: senderJid,
                 wa_timestamp: new Date(msg.messageTimestamp * 1000),
                 provider: 'baileys',
                 interactive_data: messageType === 'location' ? {
@@ -667,7 +694,9 @@ export default class BaileysProvider extends BaseProvider {
             throw new Error(`Failed to send message: Unsupported message type "${messageType}" or result undefined`);
         }
 
-        const myNumber = connection.registred_phone_number;
+
+        const phoneRecord = await WhatsappPhoneNumber.findOne({ waba_id: wabaId }).lean();
+        const myNumber = phoneRecord?.display_phone_number || connection.display_phone_number || connection.registred_phone_number;
         const contact = await Contact.findOne({ phone_number: recipientNumber, created_by: userId });
 
         const savedMessage = await Message.create({
@@ -675,12 +704,14 @@ export default class BaileysProvider extends BaseProvider {
             recipient_number: recipientNumber,
             user_id: userId,
             contact_id: contact?._id,
+            whatsapp_phone_number_id: phoneRecord?._id || null,
             content: messageText,
             message_type: messageType,
             file_url: mediaUrl,
             from_me: true,
             direction: 'outbound',
             wa_message_id: result.key.id,
+            wa_jid: jid,
             wa_timestamp: new Date(),
             provider: 'baileys',
             interactive_data: messageType === 'location' ? {
@@ -735,6 +766,7 @@ export default class BaileysProvider extends BaseProvider {
 
         const messages = await Message.find(query)
             .sort({ wa_timestamp: 1 })
+            .populate('user_id', 'name')
             .lean();
 
         return messages;
@@ -1028,15 +1060,16 @@ export default class BaileysProvider extends BaseProvider {
 
         if (sock) {
             try {
-                if (connection.connection_status === 'connected') {
-                    console.log(`Explicitly logging out Baileys for WABA ${wabaId}`);
+                if (sock.user) {
+                    console.log(`Explicitly logging out Baileys for WABA ${wabaId} (removing from linked devices)`);
                     await sock.logout();
                 } else {
+                    console.log(`Closing unauthenticated Baileys socket for WABA ${wabaId}`);
                     sock.end();
                 }
             } catch (err) {
                 console.error(`Error during Baileys logout for WABA ${wabaId}:`, err.message);
-                sock.end();
+                try { sock.end(); } catch { }
             }
             this.sockets.delete(wabaId.toString());
         }

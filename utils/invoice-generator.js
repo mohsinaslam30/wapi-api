@@ -2,170 +2,230 @@ import PDFDocument from 'pdfkit';
 import { Setting } from '../models/index.js';
 import path from 'path';
 import fs from 'fs';
+import axios from 'axios';
+
 
 export const generateInvoicePDF = async (paymentHistory, user, plan) => {
-    return new Promise(async (resolve, reject) => {
-        try {
-            const settings = await Setting.findOne();
-            const doc = new PDFDocument({
-                margin: 50,
-                size: 'A4'
-            });
-            const buffers = [];
+   return new Promise(async (resolve, reject) => {
+      try {
+         const settings = await Setting.findOne();
 
-            doc.on('data', buffers.push.bind(buffers));
-            doc.on('end', () => {
-                const pdfData = Buffer.concat(buffers);
-                resolve(pdfData);
-            });
+         const doc = new PDFDocument({
+            margin: 50,
+            size: 'A4'
+         });
 
-            const primaryColor = '#059669';
-            const secondaryColor = '#111827';
-            const textColor = '#374151';
-            const mutedTextColor = '#6B7280';
-            const borderColor = '#E5E7EB';
+         const buffers = [];
+         doc.on('data', buffers.push.bind(buffers));
+         doc.on('end', () => resolve(Buffer.concat(buffers)));
 
+         const primaryColor = '#059669';
+         const secondaryColor = '#111827';
+         const textColor = '#374151';
+         const mutedTextColor = '#6B7280';
+         const borderColor = '#E5E7EB';
 
-            let logoPath = null;
-            if (settings?.logo_light_url) {
-                const relativePath = settings.logo_light_url.replace(/\\/g, '/');
-                const testPath = path.join(process.cwd(), relativePath.startsWith('/') ? relativePath.substring(1) : relativePath);
-                if (fs.existsSync(testPath)) {
-                    logoPath = testPath;
-                }
-            }
+         doc.rect(0, 0, 595, 110).fill('#F9FAFB');
 
-            if (logoPath) {
-                doc.image(logoPath, 50, 45, { width: 40 });
-                doc.fillColor(secondaryColor)
-                   .font('Helvetica-Bold')
-                   .fontSize(18)
-                   .text(settings?.app_name || 'Wapi', 100, 52);
+         let logoSource = null;
+         if (settings?.logo_light_url) {
+            const logoUrl = settings.logo_light_url.replace(/\\/g, '/');
+
+            if (logoUrl.startsWith('http')) {
+               try {
+                  const response = await axios.get(logoUrl, { responseType: 'arraybuffer', timeout: 5000 });
+                  logoSource = Buffer.from(response.data);
+               } catch (err) {
+                  console.error('Error fetching remote logo:', err.message);
+               }
             } else {
-                doc.fillColor(primaryColor)
-                   .font('Helvetica-Bold')
-                   .fontSize(24)
-                   .text(settings?.app_name || 'Wapi', 50, 50);
+               const testPath = path.join(process.cwd(), logoUrl.startsWith('/') ? logoUrl.substring(1) : logoUrl);
+               if (fs.existsSync(testPath)) {
+                  logoSource = testPath;
+               }
             }
+         }
 
+         if (logoSource) {
+            try {
+               doc.image(logoSource, 50, 35, { width: 50 });
+            } catch (err) {
+               console.error('Error adding logo image to PDF:', err.message);
+               doc.fillColor(primaryColor)
+                  .font('Helvetica-Bold')
+                  .fontSize(24)
+                  .text(settings?.app_name || 'Wapi', 50, 40);
+            }
+         } else {
             doc.fillColor(primaryColor)
                .font('Helvetica-Bold')
-               .fontSize(20)
-               .text('INVOICE', 400, 50, { align: 'right' });
+               .fontSize(24)
+               .text(settings?.app_name || 'Wapi', 50, 40);
+         }
+
+         doc.fillColor(secondaryColor)
+            .font('Helvetica-Bold')
+            .fontSize(26)
+            .text('INVOICE', 400, 40, { align: 'right' });
+
+         const invoiceDate = new Date(
+            paymentHistory.paid_at || paymentHistory.created_at
+         ).toLocaleDateString();
+
+         doc.fillColor(mutedTextColor)
+            .font('Helvetica')
+            .fontSize(10)
+            .text(`Invoice #: ${paymentHistory.invoice_number}`, 400, 70, { align: 'right' })
+            .text(`Date: ${invoiceDate}`, 400, 85, { align: 'right' });
+
+         const sectionTop = 130;
+
+         doc.roundedRect(50, sectionTop, 220, 80, 8)
+            .strokeColor(borderColor)
+            .stroke();
+
+         doc.roundedRect(300, sectionTop, 250, 80, 8)
+            .strokeColor(borderColor)
+            .stroke();
+
+         doc.fillColor(secondaryColor)
+            .font('Helvetica-Bold')
+            .fontSize(11)
+            .text('Bill To', 60, sectionTop + 10);
+
+         doc.fillColor(textColor)
+            .font('Helvetica')
+            .fontSize(10)
+            .text(user.name || 'Customer', 60, sectionTop + 30)
+            .fillColor(mutedTextColor)
+            .text(user.email || '', 60, sectionTop + 45)
+            .text(user.phone || '', 60, sectionTop + 60);
+
+         doc.fillColor(secondaryColor)
+            .font('Helvetica-Bold')
+            .fontSize(11)
+            .text('Issued By', 310, sectionTop + 10);
+
+         doc.fillColor(textColor)
+            .font('Helvetica')
+            .fontSize(10)
+            .text(settings?.app_name || 'Wapi Service', 310, sectionTop + 30)
+            .fillColor(mutedTextColor)
+            .text(settings?.app_email || '', 310, sectionTop + 45);
+
+         const totalAmount = paymentHistory.amount;
+         const taxes = paymentHistory.taxes || [];
+
+         let totalTaxPercentage = 0;
+         taxes.forEach(t => {
+            if (t.type === 'percentage') {
+               totalTaxPercentage += (t.rate || 0);
+            }
+         });
+
+         const baseAmount = totalAmount / (1 + totalTaxPercentage / 100);
+
+         const tableTop = 250;
+
+         doc.roundedRect(50, tableTop, 500, 30, 5)
+            .fill('#F3F4F6');
+
+         doc.fillColor(secondaryColor)
+            .font('Helvetica-Bold')
+            .fontSize(10)
+            .text('Description', 65, tableTop + 10)
+            .text('Qty', 350, tableTop + 10, { width: 50, align: 'center' })
+            .text('Amount', 450, tableTop + 10, { width: 100, align: 'right' });
+
+         const rowY = tableTop + 40;
+
+         doc.fillColor(textColor)
+            .font('Helvetica')
+            .fontSize(10)
+            .text(`${plan.name} Subscription`, 65, rowY)
+            .text('1', 350, rowY, { width: 50, align: 'center' })
+            .text(
+               `${paymentHistory.currency} ${baseAmount.toFixed(2)}`,
+               450,
+               rowY,
+               { width: 100, align: 'right' }
+            );
+
+         doc.moveTo(50, rowY + 20)
+            .lineTo(550, rowY + 20)
+            .strokeColor(borderColor)
+            .stroke();
+
+         let currentY = rowY + 40;
+
+         doc.fillColor(mutedTextColor)
+            .text('Subtotal', 350, currentY)
+            .fillColor(textColor)
+            .text(
+               `${paymentHistory.currency} ${baseAmount.toFixed(2)}`,
+               450,
+               currentY,
+               { align: 'right' }
+            );
+
+         currentY += 20;
+
+         for (const tax of taxes) {
+            const taxAmt = baseAmount * ((tax.rate || 0) / 100);
 
             doc.fillColor(mutedTextColor)
-               .font('Helvetica')
-               .fontSize(10)
-               .text(`Invoice #: ${paymentHistory.invoice_number}`, 400, 75, { align: 'right' })
-               .text(`Date: ${new Date(paymentHistory.paid_at || paymentHistory.created_at).toLocaleDateString()}`, 400, 90, { align: 'right' });
-
-            doc.moveTo(50, 120)
-               .lineTo(550, 120)
-               .strokeColor(borderColor)
-               .lineWidth(1)
-               .stroke();
-
-            doc.fillColor(secondaryColor)
-               .font('Helvetica-Bold')
-               .fontSize(12)
-               .text('Bill To:', 50, 150)
-               .font('Helvetica')
-               .fontSize(10)
+               .text(`${tax.name || 'Tax'} (${tax.rate || 0}%)`, 350, currentY)
                .fillColor(textColor)
-               .text(user.name || 'Valued Customer', 50, 168)
-               .fillColor(mutedTextColor)
-               .text(user.email, 50, 183)
-               .text(user.phone || '', 50, 198);
-
-            doc.fillColor(secondaryColor)
-               .font('Helvetica-Bold')
-               .fontSize(12)
-               .text('Issued By:', 300, 150)
-               .font('Helvetica')
-               .fontSize(10)
-               .fillColor(textColor)
-               .text(settings?.app_name || 'Wapi Service', 300, 168)
-               .fillColor(mutedTextColor)
-               .text(settings?.app_email || '', 300, 183);
-
-            const tableTop = 260;
-            doc.rect(50, tableTop, 500, 25)
-               .fill('#F9FAFB');
-
-            doc.fillColor(secondaryColor)
-               .font('Helvetica-Bold')
-               .fontSize(10)
-               .text('Description', 65, tableTop + 8)
-               .text('Qty', 350, tableTop + 8, { width: 50, align: 'center' })
-               .text('Amount', 450, tableTop + 8, { width: 100, align: 'right' });
-
-            const itemRowTop = tableTop + 35;
-            doc.fillColor(textColor)
-               .font('Helvetica')
-               .fontSize(10)
-               .text(`${plan.name} Subscription`, 65, itemRowTop)
-               .text('1', 350, itemRowTop, { width: 50, align: 'center' });
-
-            const totalAmount = paymentHistory.amount;
-            const taxes = paymentHistory.taxes || [];
-            let totalTaxPercentage = 0;
-            taxes.forEach(t => {
-                if (t.type === 'percentage') totalTaxPercentage += (t.rate || 0);
-            });
-
-            const baseAmount = totalAmount / (1 + (totalTaxPercentage / 100));
-
-            doc.text(`${paymentHistory.currency} ${baseAmount.toFixed(2)}`, 450, itemRowTop, { width: 100, align: 'right' });
-
-            let currentY = itemRowTop + 30;
-
-            doc.moveTo(50, currentY)
-               .lineTo(550, currentY)
-               .strokeColor(borderColor)
-               .lineWidth(0.5)
-               .stroke();
-
-            currentY += 15;
-
-            doc.fillColor(mutedTextColor)
-               .text('Subtotal', 350, currentY)
-               .fillColor(textColor)
-               .text(`${paymentHistory.currency} ${baseAmount.toFixed(2)}`, 450, currentY, { width: 100, align: 'right' });
+               .text(
+                  `${paymentHistory.currency} ${taxAmt.toFixed(2)}`,
+                  450,
+                  currentY,
+                  { align: 'right' }
+               );
 
             currentY += 20;
+         }
 
-            if (taxes.length > 0) {
-                for (const tax of taxes) {
-                    const taxAmt = baseAmount * ((tax.rate || 0) / 100);
-                    doc.fillColor(mutedTextColor)
-                       .text(`${tax.name || 'Tax'} (${tax.rate || 0}%)`, 350, currentY)
-                       .fillColor(textColor)
-                       .text(`${paymentHistory.currency} ${taxAmt.toFixed(2)}`, 450, currentY, { width: 100, align: 'right' });
-                    currentY += 20;
-                }
-            }
+         currentY += 10;
 
-            currentY += 10;
-            doc.rect(340, currentY, 210, 35)
-               .fill(primaryColor);
+         doc.roundedRect(330, currentY, 220, 45, 8)
+            .fill(primaryColor);
 
-            doc.fillColor('#FFFFFF')
-               .font('Helvetica-Bold')
-               .fontSize(12)
-               .text('Total Paid', 355, currentY + 12)
-               .fontSize(14)
-               .text(`${paymentHistory.currency} ${totalAmount.toFixed(2)}`, 440, currentY + 10, { width: 100, align: 'right' });
+         doc.fillColor('#FFFFFF')
+            .font('Helvetica-Bold')
+            .fontSize(12)
+            .text('Total Paid', 345, currentY + 15);
 
-            doc.fillColor(mutedTextColor)
-               .font('Helvetica')
-               .fontSize(9)
-               .text('Thank you for choosing Wapi for your WhatsApp marketing needs!', 50, 750, { align: 'center', width: 500 })
-               .text('For any questions, please contact support at ' + (settings?.support_email || 'support@example.com'), 50, 765, { align: 'center', width: 500 });
+         doc.fontSize(16)
+            .text(
+               `${paymentHistory.currency} ${totalAmount.toFixed(2)}`,
+               430,
+               currentY + 12,
+               { align: 'right' }
+            );
 
-            doc.end();
-        } catch (error) {
-            console.error('Invoice PDF Generation Error:', error);
-            reject(error);
-        }
-    });
+         const footerY = 730;
+
+         doc.fillColor(mutedTextColor)
+            .font('Helvetica')
+            .fontSize(9)
+            .text(
+               'Thank you for choosing Wapi for your WhatsApp marketing needs!',
+               50,
+               footerY,
+               { align: 'center', width: 500 }
+            )
+            .text(
+               `For support: ${settings?.support_email || 'support@example.com'}`,
+               50,
+               footerY + 15,
+               { align: 'center', width: 500 }
+            );
+
+         doc.end();
+      } catch (err) {
+         console.error('Invoice PDF Error:', err);
+         reject(err);
+      }
+   });
 };

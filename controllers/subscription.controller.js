@@ -1,4 +1,4 @@
-import { Subscription, AiPromptLog, Plan, PaymentHistory, User, Tag, Contact, Template, Campaign, CustomField, AutomationFlow, Team, Setting, Message, Form, WhatsappCallAgent } from '../models/index.js';
+import { Subscription, AiPromptLog, Plan, PaymentHistory, User, Tag, Contact, Template, Campaign, CustomField, AutomationFlow, Team, Setting, Message, Form, WhatsappCallAgent, MessageBot, AppointmentBooking, KanbanFunnel, FacebookAdCampaign, Segment } from '../models/index.js';
 import mongoose from 'mongoose';
 import {
     StripeService,
@@ -7,7 +7,7 @@ import {
     calculatePeriodEnd
 } from '../utils/payment-gateway.service.js';
 import { generateInvoiceNumber } from '../utils/invoice-helper.js';
-import { getExchangeRate } from '../utils/currency.service.js';
+import { getExchangeRate, formatAmount } from '../utils/currency.service.js';
 import { generateInvoicePDF } from '../utils/invoice-generator.js';
 
 const DEFAULT_PAGE = 1;
@@ -40,8 +40,8 @@ const parseSortParams = (query) => {
 };
 
 
-const buildPaymentHistoryAggregation = (matchQuery, skip, limit, sortField, sortOrder) => {
-    return [
+const buildPaymentHistoryAggregation = (matchQuery, skip, limit, sortField, sortOrder, searchParams = null) => {
+    const pipeline = [
         { $match: matchQuery },
         {
             $lookup: {
@@ -69,7 +69,26 @@ const buildPaymentHistoryAggregation = (matchQuery, skip, limit, sortField, sort
                 as: 'subscription'
             }
         },
-        { $unwind: { path: '$subscription', preserveNullAndEmptyArrays: true } },
+        { $unwind: { path: '$subscription', preserveNullAndEmptyArrays: true } }
+    ];
+
+    if (searchParams && searchParams.active) {
+        pipeline.push({
+            $match: {
+                $or: [
+                    { transaction_id: searchParams.regex },
+                    { invoice_number: searchParams.regex },
+                    { notes: searchParams.regex },
+                    { 'user.name': searchParams.regex },
+                    { 'user.email': searchParams.regex },
+                    { 'plan.name': searchParams.regex },
+                    { payment_gateway: searchParams.regex }
+                ]
+            }
+        });
+    }
+
+    pipeline.push(
         {
             $project: {
                 _id: 1,
@@ -117,7 +136,9 @@ const buildPaymentHistoryAggregation = (matchQuery, skip, limit, sortField, sort
         { $sort: { [sortField]: sortOrder } },
         { $skip: skip },
         { $limit: limit }
-    ];
+    );
+
+    return pipeline;
 };
 
 
@@ -184,18 +205,25 @@ export const getSubscriptionPayments = async (req, res) => {
             }
         }
 
+        const searchParams = { active: false };
         if (search && String(search).trim()) {
-            const term = String(search).trim();
-            const regex = new RegExp(term, 'i');
-            matchQuery.$or = [
-                { transaction_id: regex },
-                { invoice_number: regex },
-                { notes: regex }
-            ];
+            searchParams.active = true;
+            searchParams.regex = new RegExp(String(search).trim(), 'i');
         }
 
-        const totalCount = await PaymentHistory.countDocuments(matchQuery);
-        const pipeline = buildPaymentHistoryAggregation(matchQuery, skip, limit, sortField, sortOrder);
+        const pipeline = buildPaymentHistoryAggregation(matchQuery, skip, limit, sortField, sortOrder, searchParams);
+
+        let totalCount = 0;
+        if (searchParams.active) {
+            const countPipeline = [...pipeline];
+            const countStages = pipeline.filter(s => !s.$skip && !s.$limit && !s.$sort && !s.$project);
+            countStages.push({ $count: 'total' });
+            const countResult = await PaymentHistory.aggregate(countStages);
+            totalCount = countResult[0]?.total || 0;
+        } else {
+            totalCount = await PaymentHistory.countDocuments(matchQuery);
+        }
+
         const payments = await PaymentHistory.aggregate(pipeline);
 
         const setting = await Setting.findOne().populate('default_currency').lean();
@@ -203,8 +231,8 @@ export const getSubscriptionPayments = async (req, res) => {
 
         for (let payment of payments) {
             const rate = await getExchangeRate(payment.currency || 'INR', defaultCurrencyCode);
-            if (payment.amount != null) payment.amount *= rate;
-            if (payment.plan && payment.plan.price != null) payment.plan.price *= rate;
+            if (payment.amount != null) payment.amount = formatAmount(payment.amount * rate);
+            if (payment.plan && payment.plan.price != null) payment.plan.price = formatAmount(payment.plan.price * rate);
             payment.currency = defaultCurrencyCode;
         }
 
@@ -231,8 +259,8 @@ export const getSubscriptionPayments = async (req, res) => {
 };
 
 
-const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOrder) => {
-    return [
+const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOrder, searchParams = null) => {
+    const pipeline = [
         { $match: matchQuery },
         {
             $lookup: {
@@ -251,7 +279,24 @@ const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOr
                 as: 'plan'
             }
         },
-        { $unwind: { path: '$plan', preserveNullAndEmptyArrays: true } },
+        { $unwind: { path: '$plan', preserveNullAndEmptyArrays: true } }
+    ];
+
+    if (searchParams && searchParams.active) {
+        pipeline.push({
+            $match: {
+                $or: [
+                    { transaction_id: searchParams.regex },
+                    { payment_reference: searchParams.regex },
+                    { 'user.name': searchParams.regex },
+                    { 'user.email': searchParams.regex },
+                    { 'plan.name': searchParams.regex }
+                ]
+            }
+        });
+    }
+
+    pipeline.push(
         {
             $project: {
                 _id: 1,
@@ -275,6 +320,7 @@ const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOr
                 auto_renew: 1,
                 created_at: 1,
                 updated_at: 1,
+                duration: 1,
                 user: {
                     _id: '$user._id',
                     name: '$user.name',
@@ -294,14 +340,16 @@ const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOr
         { $sort: { [sortField]: sortOrder } },
         { $skip: skip },
         { $limit: limit }
-    ];
+    );
+
+    return pipeline;
 };
 
 export const getAllSubscriptions = async (req, res) => {
     try {
         const { page, limit, skip } = parsePaginationParams(req.query);
         const { sortField, sortOrder } = parseSortParams(req.query);
-        const { status, user_id, is_expiring_soon } = req.query;
+        const { status, user_id, is_expiring_soon, search } = req.query;
 
         let matchQuery = { deleted_at: null };
 
@@ -320,8 +368,24 @@ export const getAllSubscriptions = async (req, res) => {
             matchQuery.status = { $in: ['active', 'trial'] };
         }
 
-        const totalCount = await Subscription.countDocuments(matchQuery);
-        const pipeline = buildSubscriptionAggregation(matchQuery, skip, limit, sortField, sortOrder);
+        const searchParams = { active: false };
+        if (search && String(search).trim()) {
+            searchParams.active = true;
+            searchParams.regex = new RegExp(String(search).trim(), 'i');
+        }
+
+        const pipeline = buildSubscriptionAggregation(matchQuery, skip, limit, sortField, sortOrder, searchParams);
+
+        let totalCount = 0;
+        if (searchParams.active) {
+            const countStages = pipeline.filter(s => !s.$skip && !s.$limit && !s.$sort && !s.$project);
+            countStages.push({ $count: 'total' });
+            const countResult = await Subscription.aggregate(countStages);
+            totalCount = countResult[0]?.total || 0;
+        } else {
+            totalCount = await Subscription.countDocuments(matchQuery);
+        }
+
         const subscriptions = await Subscription.aggregate(pipeline);
 
         const setting = await Setting.findOne().populate('default_currency').lean();
@@ -329,8 +393,8 @@ export const getAllSubscriptions = async (req, res) => {
 
         for (let sub of subscriptions) {
             const rate = await getExchangeRate(sub.currency || 'INR', defaultCurrencyCode);
-            if (sub.amount_paid != null) sub.amount_paid *= rate;
-            if (sub.plan && sub.plan.price != null) sub.plan.price *= rate;
+            if (sub.amount_paid != null) sub.amount_paid = formatAmount(sub.amount_paid * rate);
+            if (sub.plan && sub.plan.price != null) sub.plan.price = formatAmount(sub.plan.price * rate);
             sub.currency = defaultCurrencyCode;
         }
 
@@ -424,7 +488,7 @@ export const approveManualSubscription = async (req, res) => {
             totalAmount = totalAmount * (1 + totalTaxRate / 100);
         }
 
-        subscription.amount_paid = totalAmount;
+        subscription.amount_paid = formatAmount(totalAmount);
         subscription.approved_by = adminUserId;
         subscription.approved_at = new Date();
         subscription.auto_renew = false;
@@ -456,7 +520,6 @@ export const approveManualSubscription = async (req, res) => {
         });
     }
 };
-
 
 export const rejectManualSubscription = async (req, res) => {
     try {
@@ -496,11 +559,10 @@ export const rejectManualSubscription = async (req, res) => {
     }
 };
 
-
 const PLAN_SENSITIVE_FIELDS = '-stripe_price_id -stripe_product_id -stripe_payment_link_id -stripe_payment_link_url -razorpay_plan_id';
 
 const fetchDynamicUsage = async (userId) => {
-    const [tagsCount, contactsCount, templatesCount, campaignsCount, customFieldsCount, staffCount, botFlowsCount, aiPromptCount, messagesCount, teamCount, formsCount, whatsapp_callingCount] = await Promise.all([
+    const [tagsCount, contactsCount, templatesCount, campaignsCount, customFieldsCount, staffCount, botFlowsCount, aiPromptCount, messagesCount, teamsCount, formsCount, whatsapp_callingCount, messageBotsCount, appointmentBookingsCount, userResult, kanbanFunnelCount, facebookAdCampaignCount, segmentCount] = await Promise.all([
         Tag.countDocuments({ created_by: userId, deleted_at: null }),
         Contact.countDocuments({ created_by: userId, deleted_at: null }),
         Template.countDocuments({ user_id: userId }),
@@ -513,7 +575,16 @@ const fetchDynamicUsage = async (userId) => {
         Team.countDocuments({ user_id: userId, deleted_at: null }),
         Form.countDocuments({ user_id: userId, deleted_at: null }),
         WhatsappCallAgent.countDocuments({ user_id: userId, deleted_at: null }),
+        MessageBot.countDocuments({ user_id: userId, deleted_at: null }),
+        AppointmentBooking.countDocuments({ user_id: userId, deleted_at: null }),
+        User.findById(userId).select('storage_used').lean(),
+        KanbanFunnel.countDocuments({ userId: userId, deleted_at: null }),
+        FacebookAdCampaign.countDocuments({ user_id: userId, deleted_at: null }),
+        Segment.countDocuments({ user_id: userId, deleted_at: null }),
     ]);
+
+    const storageUsedMB = parseFloat(((userResult?.storage_used || 0) / (1024 * 1024)).toFixed(2));
+
     return {
         tags_used: tagsCount,
         contacts_used: contactsCount,
@@ -525,9 +596,15 @@ const fetchDynamicUsage = async (userId) => {
         message_bots_used: botFlowsCount,
         ai_prompts_used: aiPromptCount,
         conversations_used: messagesCount,
-        team_used: teamCount,
+        teams_used: teamsCount,
         forms_used: formsCount,
         whatsapp_calling_used: whatsapp_callingCount,
+        message_bots_used: messageBotsCount,
+        appointment_bookings_used: appointmentBookingsCount,
+        storage_used: storageUsedMB,
+        kanban_funnel_used: kanbanFunnelCount,
+        facebook_ad_campaign_used: facebookAdCampaignCount,
+        segments_used: segmentCount,
     };
 };
 
@@ -561,6 +638,16 @@ export const getUserSubscription = async (req, res) => {
         }
 
         const usage = await fetchDynamicUsage(userId);
+
+        const setting = await Setting.findOne().select('storage_limit').lean();
+        const storageLimit = setting?.storage_limit || 0;
+
+        if (subscription.plan_id && subscription.plan_id.features) {
+            subscription.plan_id.features.storage = storageLimit;
+        } else if (subscription.features) {
+            subscription.features.storage = storageLimit;
+        }
+
         const data = { ...subscription, usage };
 
         return res.status(200).json({
@@ -641,6 +728,7 @@ export const createStripeSubscription = async (req, res) => {
                 currency: (plan.currency?.code || plan.currency || 'INR').toString().toUpperCase(),
                 stripe_subscription_id: null,
                 taxes: plan.taxes || [],
+                features: plan.features,
                 auto_rereturnDocument: 'after'
             });
         }
@@ -673,7 +761,6 @@ export const createStripeSubscription = async (req, res) => {
     }
 };
 
-
 export const createManualSubscription = async (req, res) => {
     try {
         const {
@@ -689,7 +776,7 @@ export const createManualSubscription = async (req, res) => {
         } = req.body;
         const userId = req.user._id;
 
-        const transaction_receipt = req.file ? `/uploads/receipts/${req.file.filename}` : null;
+        const transaction_receipt = req.file ? req.file.path : null;
 
         if (!plan_id || !mongoose.Types.ObjectId.isValid(plan_id)) {
             return res.status(400).json({
@@ -758,6 +845,7 @@ export const createManualSubscription = async (req, res) => {
             currency: (plan.currency?.code || plan.currency || 'INR').toString().toUpperCase(),
             amount_paid: 0,
             taxes: plan.taxes || [],
+            features: plan.features,
             auto_renew: false
         });
 
@@ -775,7 +863,6 @@ export const createManualSubscription = async (req, res) => {
         });
     }
 };
-
 
 export const createRazorpaySubscription = async (req, res) => {
     try {
@@ -856,6 +943,7 @@ export const createRazorpaySubscription = async (req, res) => {
                 currency: (plan.currency?.code || plan.currency || 'INR').toString().toUpperCase(),
                 razorpay_subscription_id: linkResult.id,
                 taxes: plan.taxes || [],
+                features: plan.features,
                 auto_rereturnDocument: 'after'
             });
         }
@@ -962,6 +1050,7 @@ export const createPayPalSubscription = async (req, res) => {
                 currency: (plan.currency?.code || plan.currency || 'USD').toString().toUpperCase(),
                 paypal_subscription_id: paypalSubscription.id,
                 taxes: plan.taxes || [],
+                features: plan.features,
                 auto_rereturnDocument: 'after'
             });
         }
@@ -990,8 +1079,13 @@ export const createPayPalSubscription = async (req, res) => {
 
 export const assignPlanToUser = async (req, res) => {
     try {
-        const { user_id, plan_id, amount } = req.body;
+        const { user_id, plan_id, amount, duration: reqDuration } = req.body;
         const adminId = req.user._id;
+
+        const duration = Math.max(1, parseInt(reqDuration) || 1);
+        if (duration > 24) {
+            return res.status(400).json({ success: false, message: 'Maximum duration allowed is 24 cycles' });
+        }
 
         if (!user_id || !mongoose.Types.ObjectId.isValid(user_id)) {
             return res.status(400).json({ success: false, message: 'Valid user ID is required' });
@@ -1046,8 +1140,11 @@ export const assignPlanToUser = async (req, res) => {
         }
 
         const now = new Date();
-        const periodEnd = calculatePeriodEnd(now, plan.billing_cycle || 'monthly');
-        const amountPaid = amount !== undefined ? Number(amount) : plan.price;
+        const billingCycle = plan.billing_cycle || 'monthly';
+        const finalDuration = billingCycle === 'lifetime' ? 1 : duration;
+
+        const periodEnd = calculatePeriodEnd(now, billingCycle, finalDuration);
+        const amountPaid = amount !== undefined ? Number(amount) : (plan.price * finalDuration);
 
         const subscription = await Subscription.create({
             user_id: user._id,
@@ -1056,6 +1153,7 @@ export const assignPlanToUser = async (req, res) => {
             started_at: now,
             current_period_start: now,
             current_period_end: periodEnd,
+            duration: finalDuration,
             payment_gateway: 'admin generated',
             payment_method: 'manual',
             payment_status: 'paid',
@@ -1065,6 +1163,7 @@ export const assignPlanToUser = async (req, res) => {
             currency: (plan.currency?.code || plan.currency || 'INR').toString().toUpperCase(),
             amount_paid: amountPaid,
             taxes: plan.taxes || [],
+            features: plan.features,
             auto_renew: false,
             notes: 'Admin assigned plan'
         });
@@ -1173,7 +1272,6 @@ export const cancelSubscription = async (req, res) => {
     }
 };
 
-
 export const resumeSubscription = async (req, res) => {
     try {
         const { id } = req.params;
@@ -1227,7 +1325,6 @@ export const resumeSubscription = async (req, res) => {
         });
     }
 };
-
 
 export const changeSubscriptionPlan = async (req, res) => {
     try {
@@ -1433,7 +1530,6 @@ export const changeSubscriptionPlan = async (req, res) => {
     }
 };
 
-
 export const getManagePortalUrl = async (req, res) => {
     try {
         const { id } = req.params;
@@ -1495,7 +1591,6 @@ export const getManagePortalUrl = async (req, res) => {
         });
     }
 };
-
 
 export const getSubscriptionUsage = async (req, res) => {
     try {
@@ -1733,6 +1828,82 @@ export const downloadInvoice = async (req, res) => {
     }
 };
 
+export const overrideSubscriptionLimits = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { features } = req.body;
+        const adminId = req.user._id;
+
+        const subscription = await Subscription.findOne({
+            user_id: userId,
+            status: { $in: ['active', 'trial'] },
+            deleted_at: null
+        });
+
+        if (!subscription) {
+            return res.status(404).json({
+                success: false,
+                message: 'Active subscription not found for this user'
+            });
+        }
+
+        subscription.features = { ...(subscription.features || {}), ...features };
+        subscription.is_custom = true;
+        subscription.overridden_by = adminId;
+        await subscription.save();
+
+        return res.status(200).json({
+            success: true,
+            message: 'Subscription limits overridden successfully',
+            data: subscription
+        });
+    } catch (error) {
+        console.error('Error overriding subscription limits:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to override subscription limits',
+            error: error.message
+        });
+    }
+};
+
+export const resetSubscriptionLimits = async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        const subscription = await Subscription.findOne({
+            user_id: userId,
+            status: { $in: ['active', 'trial'] },
+            deleted_at: null
+        }).populate('plan_id');
+
+        if (!subscription) {
+            return res.status(404).json({
+                success: false,
+                message: 'Active subscription not found for this user'
+            });
+        }
+
+        subscription.features = subscription.plan_id.features;
+        subscription.is_custom = false;
+        subscription.overridden_by = null;
+        await subscription.save();
+
+        return res.status(200).json({
+            success: true,
+            message: 'Subscription limits reset to plan defaults',
+            data: subscription
+        });
+    } catch (error) {
+        console.error('Error resetting subscription limits:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to reset subscription limits',
+            error: error.message
+        });
+    }
+};
+
 export default {
     getAllSubscriptions,
     getSubscriptionStats,
@@ -1752,5 +1923,7 @@ export default {
     getSubscriptionUsage,
     getSubscriptionCheckoutUrl,
     assignPlanToUser,
-    downloadInvoice
+    downloadInvoice,
+    overrideSubscriptionLimits,
+    resetSubscriptionLimits
 };

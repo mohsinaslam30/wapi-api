@@ -75,13 +75,22 @@ export const createChatbot = async (req, res) => {
 export const getAllChatbots = async (req, res) => {
     try {
         const userId = req.user.owner_id;
-        const { waba_id } = req.query;
+        const { waba_id, search } = req.query;
 
         if (!waba_id) {
             return res.status(400).json({ success: false, message: 'waba_id is required' });
         }
 
-        const chatbots = await Chatbot.find({ user_id: userId, waba_id, deleted_at: null })
+        const query = { user_id: userId, waba_id, deleted_at: null };
+
+        if (search) {
+            query.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { business_name: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const chatbots = await Chatbot.find(query)
             .populate('ai_model', 'name display_name')
             .lean()
             .sort({ created_at: -1 });

@@ -55,27 +55,73 @@ export const createTax = async (req, res) => {
     }
 };
 
+const parsePaginationParams = (query) => {
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(query.limit) || 10));
+    const skip = (page - 1) * limit;
+    return { page, limit, skip };
+};
+
+const buildSearchQuery = (searchTerm) => {
+    if (!searchTerm || searchTerm.trim() === '') {
+        return {};
+    }
+
+    const sanitizedSearch = searchTerm.trim();
+    const conditions = [
+        { name: { $regex: sanitizedSearch, $options: 'i' } },
+        { type: { $regex: sanitizedSearch, $options: 'i' } },
+        { description: { $regex: sanitizedSearch, $options: 'i' } }
+    ];
+
+    const numSearch = parseFloat(sanitizedSearch);
+    if (!isNaN(numSearch)) {
+        conditions.push({ rate: numSearch });
+    }
+
+    if (sanitizedSearch.toLowerCase() === 'active') {
+        conditions.push({ is_active: true });
+    } else if (sanitizedSearch.toLowerCase() === 'inactive') {
+        conditions.push({ is_active: false });
+    }
+
+    return { $or: conditions };
+};
+
 export const getTaxes = async (req, res) => {
     try {
-        const { search, is_active } = req.query;
+        const { search, is_active, page: reqPage, limit: reqLimit } = req.query;
+        const { page, limit, skip } = parsePaginationParams(req.query);
+        
         const query = { deleted_at: null };
 
         if (search) {
-            query.name = { $regex: search, $options: 'i' };
+            const searchQuery = buildSearchQuery(search);
+            Object.assign(query, searchQuery);
         }
 
         if (is_active !== undefined) {
             query.is_active = is_active === 'true';
         }
 
-        const taxes = await Tax.find(query).sort({ created_at: -1 }).lean();
+        const taxes = await Tax.find(query)
+            .sort({ created_at: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
+
         const total = await Tax.countDocuments(query);
 
         return res.status(200).json({
             success: true,
             data: {
                 taxes,
-                total
+                pagination: {
+                    currentPage: page,
+                    totalPages: Math.ceil(total / limit),
+                    totalItems: total,
+                    itemsPerPage: limit
+                }
             }
         });
     } catch (error) {

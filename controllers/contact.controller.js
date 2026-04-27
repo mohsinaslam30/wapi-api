@@ -1,5 +1,8 @@
-import { Contact, CustomField, User, Tag, ImportJob } from '../models/index.js';
+import { Contact, CustomField, User, Tag, ImportJob, Role } from '../models/index.js';
 import mongoose from 'mongoose';
+import * as segmentService from '../services/segment.service.js';
+import * as funnelService from '../services/funnel.service.js';
+
 import { getContactExportQueue } from '../queues/contact-export-queue.js';
 import { getContactImportQueue } from '../queues/contact-import-queue.js';
 import path from 'path';
@@ -40,10 +43,10 @@ const validateTags = async (tagIds, userId) => {
 const validatePhoneNumber = (phoneNumber) => {
   const cleaned = phoneNumber.replace(/[\s\-()\+]/g, '');
 
-  if (!/^\d{10,15}$/.test(cleaned)) {
+  if (!/^\d{6,15}$/.test(cleaned)) {
     return {
       isValid: false,
-      message: 'Phone number must be 10-15 digits'
+      message: 'Phone number must be 6-15 digits'
     };
   }
 
@@ -328,6 +331,10 @@ export const createContact = async (req, res) => {
       created_by: req.user.id
     });
 
+    if (req.body.segments && Array.isArray(req.body.segments)) {
+      await segmentService.updateContactSegments(contact._id, req.body.segments, userId);
+    }
+
     return res.status(201).json({
       success: true,
       message: 'Contact created successfully',
@@ -365,9 +372,23 @@ export const getContacts = async (req, res) => {
     };
 
     if (search) {
+      const searchRegex = { $regex: search, $options: 'i' };
+
+      const matchingTags = await Tag.find({
+        label: searchRegex,
+        created_by: req.user.owner_id,
+        deleted_at: null
+      }).select('_id');
+      const tagIds = matchingTags.map(t => t._id);
+
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { phone_number: { $regex: search, $options: 'i' } }
+        { name: searchRegex },
+        { phone_number: searchRegex },
+        { email: searchRegex },
+        { source: searchRegex },
+        { tags: { $in: tagIds } },
+        { 'metadata.address': searchRegex },
+        { 'custom_fields.address': searchRegex }
       ];
     }
 
@@ -397,6 +418,8 @@ export const getContacts = async (req, res) => {
       .lean();
 
     const total = await Contact.countDocuments(query);
+
+    await segmentService.attachSegmentsToContacts(contacts, req.user.owner_id);
 
     return res.status(200).json({
       success: true,
@@ -439,7 +462,7 @@ export const getContactById = async (req, res) => {
       .populate({
         path: 'tags',
         select: '_id label color'
-      });
+      }).lean();
 
     if (!contact) {
       return res.status(404).json({
@@ -448,10 +471,13 @@ export const getContactById = async (req, res) => {
       });
     }
 
+    await segmentService.attachSegmentsToContacts(contact, req.user.owner_id);
+
     return res.status(200).json({
       success: true,
       data: contact
     });
+
   } catch (error) {
     console.error('Error fetching contact:', error);
     return res.status(500).json({
@@ -466,6 +492,8 @@ export const updateContact = async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body || {};
+    const groupIds = updateData.segments;
+    delete updateData.segments;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -570,6 +598,10 @@ export const updateContact = async (req, res) => {
     }
     await contact.save();
 
+    if (groupIds && Array.isArray(groupIds)) {
+      await segmentService.updateContactSegments(id, groupIds, req.user.owner_id);
+    }
+
     await contact.populate('assigned_to', 'name email');
     await contact.populate({
       path: 'tags',
@@ -621,7 +653,10 @@ export const deleteContact = async (req, res) => {
     }
     await contact.softDelete();
 
+    await segmentService.removeContactFromAllSegments(id, req.user.owner_id);
+
     return res.status(200).json({
+
       success: true,
       message: 'Contact deleted successfully'
     });
@@ -698,7 +733,10 @@ export const bulkDeleteContacts = async (req, res) => {
       { $set: { deleted_at: new Date() } }
     );
 
+    await segmentService.removeContactFromAllSegments(foundIds, req.user.owner_id);
+
     const response = {
+
       success: true,
       message: `${result.modifiedCount} contact(s) deleted successfully`,
       data: {
@@ -921,6 +959,57 @@ export const downloadExport = async (req, res) => {
 };
 
 
+export const getContactFunnels = async (req, res) => {
+  try {
+    const userId = req.user.owner_id;
+    const funnels = await funnelService.getFunnelsByType(userId, 'contact');
+    res.status(200).json({ success: true, data: funnels });
+  } catch (error) {
+    console.error("Error fetching contact funnels:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getContactKanbanStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.owner_id;
+    const status = await funnelService.getItemStatus(id, userId);
+    res.status(200).json({ success: true, data: status });
+  } catch (error) {
+    console.error("Error fetching contact kanban status:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const handleContactKanbanAction = async (req, res) => {
+  try {
+    const userId = req.user.owner_id;
+    const { globalItemId, actions } = req.body;
+
+    let result;
+    if (actions && Array.isArray(actions)) {
+      result = await funnelService.processBulkActions({
+        globalItemId,
+        actions,
+        userId,
+        changedBy: req.user.id
+      });
+    } else {
+      result = await funnelService.processAction({
+        ...req.body,
+        userId,
+        changedBy: req.user.id
+      });
+    }
+
+    res.status(200).json({ success: true, data: result, message: "Action processed successfully" });
+  } catch (error) {
+    console.error("Error processing contact kanban action:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export default {
   createContact,
   getContacts,
@@ -932,5 +1021,8 @@ export default {
   exportContacts,
   getExportStatus,
   downloadExport,
-  importContactsFromCSV
+  importContactsFromCSV,
+  getContactFunnels,
+  getContactKanbanStatus,
+  handleContactKanbanAction
 };

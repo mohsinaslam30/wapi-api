@@ -93,7 +93,8 @@ export const getTags = async (req, res) => {
 
     if (search) {
       query.$or = [
-        { label: { $regex: search, $options: 'i' } }
+        { label: { $regex: search, $options: 'i' } },
+        { color: { $regex: search, $options: 'i' } }
       ];
     }
 

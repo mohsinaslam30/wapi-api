@@ -23,6 +23,9 @@ router.route("/template")
 router.route("/sync-status")
     .post(checkPermission('create.form_builder'), formBuilderController.syncFlowsStatusFromMeta);
 
+router.route("/migrate")
+    .post(checkPermission('create.form_builder'), formBuilderController.migrateFlows);
+
 router.route("/:id/publish")
     .patch(checkPermission('update.form_builder'), formBuilderController.publishForm);
 

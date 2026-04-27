@@ -15,17 +15,15 @@ async function seedLanguage() {
     ];
 
     for (const languageData of languages) {
-      // 1. Determine which locale directory to use (current locale or English fallback)
       let sourceLocale = languageData.locale;
       const localePath = path.join(process.cwd(), 'locales', sourceLocale);
-      
+
       if (!fs.existsSync(localePath)) {
         sourceLocale = defaultLocale;
       }
-      
+
       const sourcePath = path.join(process.cwd(), 'locales', sourceLocale);
 
-      // 2. Load JSON files from the determined source path
       const loadJson = (filename) => {
         const filePath = path.join(sourcePath, filename);
         if (fs.existsSync(filePath)) {
@@ -35,8 +33,7 @@ async function seedLanguage() {
             console.warn(`[SeedLanguage] Failed to parse ${filePath}, falling back.`);
           }
         }
-        
-        // Fallback to English if the specific file is missing in the locale folder
+
         if (sourceLocale !== defaultLocale) {
           const fallbackPath = path.join(process.cwd(), 'locales', defaultLocale, filename);
           if (fs.existsSync(fallbackPath)) {
@@ -69,7 +66,7 @@ async function seedLanguage() {
 
       await Language.findOneAndUpdate(
         { locale: languageData.locale },
-        { 
+        {
           $set: {
             ...languageData,
             front_translation_file: frontFile,

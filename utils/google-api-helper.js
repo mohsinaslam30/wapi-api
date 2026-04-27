@@ -53,32 +53,27 @@ export const getAuthenticatedClient = async (googleAccountId) => {
 };
 
 
-/**
- * Centralized error handler for Google API errors.
- * Specifically detects 'invalid_grant' (revoked/expired refresh tokens)
- * and updates the account status in the database.
- */
+
 export const handleGoogleApiError = async (error, googleAccountId) => {
-  // Extract error code and message
-  const isInvalidGrant = 
+  const isInvalidGrant =
     (error.response?.data?.error === 'invalid_grant') ||
     (error.message && error.message.includes('invalid_grant')) ||
     (error.response?.data?.error_description?.includes('expired or revoked'));
 
   if (isInvalidGrant) {
     try {
-      await GoogleAccount.findByIdAndUpdate(googleAccountId, { 
+      await GoogleAccount.findByIdAndUpdate(googleAccountId, {
         status: 'expired',
         updated_at: new Date()
       });
       console.warn(`[google_api_helper] Account ${googleAccountId} marked as EXPIRED due to invalid_grant.`);
-      return true; // Successfully handled the specific error
+      return true;
     } catch (dbErr) {
       console.error(`[google_api_helper] Failed to update account status:`, dbErr.message);
     }
   }
-  
-  return false; // Not an invalid_grant error or handling failed
+
+  return false;
 };
 
 export const getCalendarClient = async (googleAccountId) => {

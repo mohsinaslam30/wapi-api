@@ -43,3 +43,14 @@ export const getExchangeRate = async (from, to) => {
 
     return 1;
 };
+export const formatAmount = (amount) => {
+    if (amount === null || amount === undefined) return 0;
+    const num = Number(amount);
+    if (isNaN(num)) return 0;
+
+    const parts = num.toString().split('.');
+    if (parts.length > 1 && parts[1].length > 3) {
+        return Number(num.toFixed(2));
+    }
+    return num;
+};

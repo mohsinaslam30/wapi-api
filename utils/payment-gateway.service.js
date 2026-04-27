@@ -64,22 +64,25 @@ const getRazorpayErrorMessage = (error, fallback) => {
     return (typeof msg === 'string') ? msg : fallback;
 };
 
-export const calculatePeriodEnd = (startDate, billingCycle) => {
+export const calculatePeriodEnd = (startDate, billingCycle, duration = 1) => {
     const start = new Date(startDate);
     const end = new Date(start);
+    const d = parseInt(duration) || 1;
 
     switch (billingCycle) {
         case 'monthly':
-            end.setMonth(end.getMonth() + 1);
+            end.setMonth(end.getMonth() + d);
             break;
         case 'yearly':
-            end.setFullYear(end.getFullYear() + 1);
+            end.setFullYear(end.getFullYear() + d);
+            break;
+        case 'free Trial':
+            end.setDate(end.getDate() + d);
             break;
         case 'lifetime':
-            end.setFullYear(end.getFullYear() + 100);
-            break;
+            return null;
         default:
-            end.setMonth(end.getMonth() + 1);
+            end.setMonth(end.getMonth() + d);
     }
 
     return end;

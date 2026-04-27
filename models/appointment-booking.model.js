@@ -41,7 +41,6 @@ const appointmentBookingSchema = new mongoose.Schema({
     default: 'unpaid'
   },
 
-  // Payment tracking
   payment_link: { type: String },
   payment_transaction_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentTransaction' },
   amount_due: { type: Number, default: 0 },

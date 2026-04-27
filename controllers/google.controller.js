@@ -97,8 +97,8 @@ export const disconnectAccount = async (req, res) => {
 
 
 export const fetchCalendars = async (req, res) => {
+  const { google_account_id } = req.params;
   try {
-    const { google_account_id } = req.params;
     const calendar = await getCalendarClient(google_account_id);
     const response = await calendar.calendarList.list();
     const calendars = response.data.items;
@@ -136,8 +136,8 @@ export const linkCalendar = async (req, res) => {
 
 
 export const createCalendar = async (req, res) => {
+  const { google_account_id } = req.params;
   try {
-    const { google_account_id } = req.params;
     const { summary } = req.body;
     const calendar = await getCalendarClient(google_account_id);
     const response = await calendar.calendars.insert({
@@ -183,8 +183,8 @@ export const deleteCalendar = async (req, res) => {
 
 
 export const listEvents = async (req, res) => {
+  const { calendar_id } = req.params;
   try {
-    const { calendar_id } = req.params;
     const cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
@@ -218,8 +218,8 @@ export const listEvents = async (req, res) => {
 
 
 export const createEvent = async (req, res) => {
+  const { calendar_id } = req.params;
   try {
-    const { calendar_id } = req.params;
     const { summary, description, start, end } = req.body;
     const cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
@@ -245,8 +245,8 @@ export const createEvent = async (req, res) => {
 };
 
 export const updateEvent = async (req, res) => {
+  const { calendar_id, event_id } = req.params;
   try {
-    const { calendar_id, event_id } = req.params;
     const { summary, description, start, end } = req.body;
     const cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
@@ -273,8 +273,8 @@ export const updateEvent = async (req, res) => {
 };
 
 export const deleteEvent = async (req, res) => {
+  const { calendar_id, event_id } = req.params;
   try {
-    const { calendar_id, event_id } = req.params;
     const cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
@@ -307,8 +307,8 @@ export const listSheets = async (req, res) => {
 
 
 export const createSheet = async (req, res) => {
+  const { google_account_id } = req.params;
   try {
-    const { google_account_id } = req.params;
     const { title } = req.body;
     const sheetsClient = await getSheetsClient(google_account_id);
     const response = await sheetsClient.spreadsheets.create({
@@ -331,9 +331,9 @@ export const createSheet = async (req, res) => {
 };
 
 export const readSheet = async (req, res) => {
+  const { sheet_id } = req.params;
   try {
-    const { sheet_id } = req.params;
-    const { range } = req.query; 
+    const { range } = req.query;
     const sheet = await GoogleSheet.findById(sheet_id);
     if (!sheet) return res.status(404).json({ success: false, message: 'Sheet not found' });
 
@@ -353,8 +353,8 @@ export const readSheet = async (req, res) => {
 };
 
 export const writeSheet = async (req, res) => {
+  const { sheet_id } = req.params;
   try {
-    const { sheet_id } = req.params; // DB ID
     const { range, values } = req.body;
     const sheet = await GoogleSheet.findById(sheet_id);
     if (!sheet) return res.status(404).json({ success: false, message: 'Sheet not found' });

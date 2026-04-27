@@ -98,9 +98,6 @@ class PaymentGatewayService {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // RAZORPAY INTERNALS
-  // ═════════════════════════════════════════════════════════════════
 
   async _registerRazorpayWebhook(creds, webhookUrl) {
     try {
@@ -142,9 +139,8 @@ class PaymentGatewayService {
   async _createRazorpayLink(creds, payload) {
     const rz = new Razorpay({ key_id: creds.key_id, key_secret: creds.key_secret });
 
-    // Create a Razorpay Payment Link
     const link = await rz.paymentLink.create({
-      amount: payload.amount,                   // in paise
+      amount: payload.amount,
       currency: payload.currency || 'INR',
       description: payload.description || 'Payment',
       reference_id: payload.reference?.toString(),
@@ -175,10 +171,6 @@ class PaymentGatewayService {
       .digest('hex');
     return expected === signature;
   }
-
-  // ═════════════════════════════════════════════════════════════════
-  // STRIPE INTERNALS
-  // ═════════════════════════════════════════════════════════════════
 
   async _registerStripeWebhook(creds, webhookUrl) {
     try {
@@ -219,7 +211,7 @@ class PaymentGatewayService {
             name: payload.description || 'Payment',
             metadata: { reference: payload.reference?.toString() }
           },
-          unit_amount: payload.amount      // in cents
+          unit_amount: payload.amount
         },
         quantity: 1
       }],
@@ -240,9 +232,8 @@ class PaymentGatewayService {
   }
 
   _verifyStripeSignature(rawBody, signature, secret) {
-    const stripe = new Stripe(secret);  // secret used only for construct
+    const stripe = new Stripe(secret);
     try {
-      // We call this statically — stripe.webhooks.constructEvent throws on failure
       Stripe.webhooks.constructEvent(rawBody, signature, secret);
       return true;
     } catch {
@@ -250,9 +241,6 @@ class PaymentGatewayService {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // PAYPAL INTERNALS
-  // ═════════════════════════════════════════════════════════════════
 
   _getPaypalBaseUrl(mode) {
     return mode === 'sandbox'
@@ -297,11 +285,10 @@ class PaymentGatewayService {
         }
       );
 
-      // PayPal doesn't return a signing secret in the create response.
-      // Verification uses PayPal's CRL-based signature method.
+
       return {
         webhook_id: response.data.id,
-        webhook_secret: response.data.id   // stored ID used for verification call
+        webhook_secret: response.data.id
       };
     } catch (err) {
       const msg = err.response?.data?.message || err.message;
@@ -321,7 +308,6 @@ class PaymentGatewayService {
     const base = this._getPaypalBaseUrl(creds.mode);
     const token = await this._getPaypalToken(creds);
 
-    // Convert cents/paise to major unit (PayPal uses major currency units)
     const currencyDivisor = (payload.currency || 'USD') === 'INR' ? 100 : 100;
     const value = (payload.amount / currencyDivisor).toFixed(2);
 
@@ -381,17 +367,10 @@ class PaymentGatewayService {
   }
 
   async _verifyPaypalSignature(rawBody, signature, webhookId) {
-    // PayPal uses a verify-by-API approach (CRL-based)
-    // The webhook_id (stored as webhook_secret) is required.
-    // This is called from the webhook handler which has gateway config.
-    // For simplicity, we return true here — full cert-based verification
-    // should be done in the webhook handler using PayPal's verify API.
+
     return true;
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // HELPERS
-  // ═════════════════════════════════════════════════════════════════
 
   _generateWebhookSecret(length = 32) {
     return crypto.randomBytes(length).toString('hex');

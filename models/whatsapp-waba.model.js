@@ -67,20 +67,6 @@ const whatsappWabaSchema = new mongoose.Schema({
     sparse: true
   },
 
-  fb_page_id: {
-    type: String,
-    required: false
-  },
-
-  fb_ad_account_id: {
-    type: String,
-    required: false
-  },
-
-  fb_pixel_id: {
-    type: String,
-    required: false
-  },
 
   deleted_at: {
     type: Date,

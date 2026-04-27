@@ -3,14 +3,36 @@ import mongoose from 'mongoose';
 import appointmentService from '../services/appointment.service.js';
 import paymentLinkService from '../services/payment-link.service.js';
 
+const OBJECT_ID_FIELDS = [
+  'waba_id',
+  'success_template_id',
+  'confirm_template_id',
+  'cancel_template_id',
+  'reminder_template_id',
+  'reschedule_template_id',
+  'payment_gateway_id',
+  'payment_link_template_id',
+  'google_account_id'
+];
+
+const cleanObjectIds = (data) => {
+  const cleaned = { ...data };
+  OBJECT_ID_FIELDS.forEach(field => {
+    if (cleaned[field] === "") {
+      delete cleaned[field];
+    }
+  });
+  return cleaned;
+};
 
 export const createConfig = async (req, res) => {
   try {
-    const { waba_id } = req.body;
+    const cleanedBody = cleanObjectIds(req.body);
+    const { waba_id } = cleanedBody;
     if (!waba_id) return res.status(400).json({ success: false, message: 'waba_id is required' });
 
     const config = await AppointmentConfig.create({
-      ...req.body,
+      ...cleanedBody,
       user_id: req.user.owner_id,
       waba_id
     });
@@ -132,9 +154,10 @@ export const createBooking = async (req, res) => {
 
 export const updateConfig = async (req, res) => {
   try {
+    const cleanedBody = cleanObjectIds(req.body);
     const config = await AppointmentConfig.findOneAndUpdate(
       { _id: req.params.id, user_id: req.user.owner_id },
-      req.body,
+      cleanedBody,
       { returnDocument: 'after' }
     );
     if (!config) return res.status(404).json({ success: false, message: 'Config not found' });

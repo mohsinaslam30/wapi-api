@@ -128,8 +128,12 @@ const groupMessagesByDateAndSender = (messages, replyMessagesMap = {}, reactions
       reaction_message_id: message.reaction_message_id || null,
       sender: {
         id: senderNumber,
-        name: senderNumber
+        name: (message.from_me && message.user_id?.name) ? message.user_id.name : senderNumber
       },
+      agent: (message.from_me && message.user_id) ? {
+        id: message.user_id._id || message.user_id,
+        name: message.user_id.name || 'Unknown Agent'
+      } : null,
       recipient: {
         id: recipientNumber,
         name: recipientNumber
@@ -188,7 +192,8 @@ const categorizeMediaMessages = (messages) => {
 
 export const sendMessage = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
+    const senderId = req.user.id;
     const {
       contact_id: contactIdInput,
       whatsapp_phone_number_id: whatsappPhoneNumberIdInput,
@@ -215,9 +220,35 @@ export const sendMessage = async (req, res) => {
       amount,
       description,
       gateway_id,
-      currency
+      currency,
+      coupon_code,
+      carouselCardsData,
+      carouselProducts,
+      template_id: templateIdInput
     } = req.body;
-    const uploadedFile = req.file;
+
+    const uploadedFile = req.file || (req.files && req.files['file_url'] ? req.files['file_url'][0] : null);
+    const carouselUploadedFiles = req.files && req.files['carousel_files'] ? req.files['carousel_files'] : [];
+
+    let resolvedCarouselCardsData = carouselCardsData;
+    if (carouselUploadedFiles.length > 0) {
+      const parsed = typeof carouselCardsData === 'string' ? JSON.parse(carouselCardsData) : (carouselCardsData || []);
+      resolvedCarouselCardsData = parsed.map((card, index) => {
+        const file = carouselUploadedFiles[index];
+        if (file) {
+          return {
+            ...card,
+            header: {
+              type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+              _uploadedFile: file
+            }
+          };
+        }
+        return card;
+      });
+    } else if (typeof carouselCardsData === 'string') {
+      try { resolvedCarouselCardsData = JSON.parse(carouselCardsData); } catch (_) { }
+    }
 
     let messageText = messageTextBody || message;
     let messageType = messageTypeInput;
@@ -239,10 +270,18 @@ export const sendMessage = async (req, res) => {
     }
 
     if (!contactId && contactNoInput) {
-      let contact = await Contact.findOne({ phone_number: contactNoInput, user_id: userId, deleted_at: null }).lean();
+      const cleanedPhone = contactNoInput.replace(/[\s\-()\+]/g, '');
+      if (!/^\d{6,15}$/.test(cleanedPhone)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Contact phone number must be 6-15 digits'
+        });
+      }
+
+      let contact = await Contact.findOne({ phone_number: cleanedPhone, user_id: userId, deleted_at: null }).lean();
       if (!contact) {
         contact = await Contact.create({
-          phone_number: contactNoInput,
+          phone_number: cleanedPhone,
           name: contactNoInput,
           user_id: userId,
           created_by: userId,
@@ -272,7 +311,7 @@ export const sendMessage = async (req, res) => {
       if (!contact) {
         return res.status(404).json({ success: false, error: 'Contact not found' });
       }
-      const allowed = await getAgentAllowedPhoneNumber(userId, contact.phone_number, whatsappPhoneNumberId);
+      const allowed = await getAgentAllowedPhoneNumber(req.user.id, contact.phone_number, whatsappPhoneNumberId);
       if (!allowed) {
         return res.status(403).json({
           success: false,
@@ -285,7 +324,7 @@ export const sendMessage = async (req, res) => {
     if (mediaUrls && Array.isArray(mediaUrls) && mediaUrls.length > 1) {
       const contact = await Contact.findById(contactId);
       return await sendMultipleMediaUrls({
-        userId,
+        userId: senderId,
         contact,
         whatsappPhoneNumber,
         mediaUrls,
@@ -325,7 +364,7 @@ export const sendMessage = async (req, res) => {
       });
     }
 
-    const result = await unifiedWhatsAppService.sendMessage(userId, {
+    const result = await unifiedWhatsAppService.sendMessage(senderId, {
       contactId,
       whatsappPhoneNumberId,
       whatsappPhoneNumber,
@@ -341,7 +380,7 @@ export const sendMessage = async (req, res) => {
       templateVariables,
       providerType: provider,
       connectionId,
-      mediaUrl: (mediaUrls && mediaUrls.length === 1) ? mediaUrls[0] : mediaUrl,
+      mediaUrl: uploadedFile ? uploadedFile.path : ((mediaUrls && mediaUrls.length === 1) ? mediaUrls[0] : mediaUrl),
       locationParams: messageType === 'location' && location ? {
         latitude: location.latitude,
         longitude: location.longitude,
@@ -350,7 +389,11 @@ export const sendMessage = async (req, res) => {
       } : undefined,
       replyMessageId,
       reactionMessageId,
-      reactionEmoji
+      reactionEmoji,
+      couponCode: coupon_code,
+      carouselCardsData: resolvedCarouselCardsData,
+      carouselProducts,
+      templateId: templateIdInput || undefined
     });
 
     let messageId = result.id || result.messageId;
@@ -414,7 +457,7 @@ export const sendMessage = async (req, res) => {
 
 export const getContactProfile = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const { contact_id: contactId, whatsapp_phone_number_id: whatsappPhoneNumberId } = req.query;
 
     if (!contactId) {
@@ -514,7 +557,6 @@ export const getContactProfile = async (req, res) => {
     }
 
     console.log('Final found media messages:', allMessages.length);
-    console.log('Sample media message:', allMessages[0]);
 
     const mediaByWeeks = groupMediaByWeeks(allMessages);
 
@@ -685,7 +727,7 @@ const parseDate = (dateStr) => {
 
 export const getMessages = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     console.log("userId", userId);
     const { contact_id: contactId, whatsapp_phone_number_id: whatsappPhoneNumberId, provider, connection_id, search, start_date, end_date } = req.query;
 
@@ -741,7 +783,7 @@ export const getMessages = async (req, res) => {
     }
 
     if (req.user.role === 'agent') {
-      const allowed = await getAgentAllowedPhoneNumber(userId, contact.phone_number, resolvedWhatsappPhoneNumberId);
+      const allowed = await getAgentAllowedPhoneNumber(req.user.id, contact.phone_number, resolvedWhatsappPhoneNumberId);
       if (!allowed) {
         return res.status(403).json({
           success: false,
@@ -844,7 +886,7 @@ export const getMessages = async (req, res) => {
 
 export const togglePinChat = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const { contact_id: contactId, phone_number: phoneNumber } = req.body;
 
     if (!contactId && !phoneNumber) {
@@ -901,7 +943,7 @@ const parseRecentChatsDate = (dateStr) => {
 
 export const getRecentChats = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const {
       provider,
       whatsapp_phone_number_id: whatsappPhoneNumberId,
@@ -924,7 +966,7 @@ export const getRecentChats = async (req, res) => {
 
     if (req.user.role === 'agent' && !resolvedWhatsappPhoneNumberId) {
       const assignments = await ChatAssignment.find({
-        agent_id: userId,
+        agent_id: req.user.id,
         $or: [{ status: 'assigned' }, { status: { $exists: false } }]
       })
         .select('whatsapp_phone_number_id assigned_by sender_number receiver_number')
@@ -969,13 +1011,13 @@ export const getRecentChats = async (req, res) => {
 
       if (req.user.role === 'agent') {
         let agentHasAssignment = await ChatAssignment.findOne({
-          agent_id: userId,
+          agent_id: req.user.id,
           whatsapp_phone_number_id: resolvedWhatsappPhoneNumberId,
           $or: [{ status: 'assigned' }, { status: { $exists: false } }]
         }).lean();
         if (!agentHasAssignment) {
           const legacy = await ChatAssignment.findOne({
-            agent_id: userId,
+            agent_id: req.user.id,
             whatsapp_phone_number_id: { $exists: false },
             $or: [{ status: 'assigned' }, { status: { $exists: false } }]
           }).select('assigned_by sender_number receiver_number').lean();
@@ -1041,7 +1083,7 @@ export const getRecentChats = async (req, res) => {
     let filteredChats = chats;
     if (req.user.role === 'agent' && myPhoneNumber) {
       const assignments = await ChatAssignment.find({
-        agent_id: userId,
+        agent_id: req.user.id,
         whatsapp_phone_number_id: resolvedWhatsappPhoneNumberId,
         $or: [{ status: 'assigned' }, { status: { $exists: false } }]
       }).select('sender_number receiver_number').lean();
@@ -1361,7 +1403,7 @@ export const getRecentChats = async (req, res) => {
 
 export const getConnectionStatus = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const { provider, whatsapp_phone_number_id: whatsappPhoneNumberId } = req.query;
 
     const providerType = provider || null;
@@ -1416,7 +1458,7 @@ export const getConnectionStatus = async (req, res) => {
 
 export const connectWhatsApp = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const { name, provider = 'business_api', phone_number_id, access_token, whatsapp_business_account_id, registred_phone_number, app_id, workspace_id, business_id } = req.body;
 
     if (provider === PROVIDER_TYPES.BUSINESS_API) {
@@ -1580,7 +1622,7 @@ export const getEmbbededSignupConnection = async (req, res) => {
   }
 
   processedAuthCodes.add(code);
-  setTimeout(() => processedAuthCodes.delete(code), 5 * 60 * 1000); // Clear after 5 minutes to prevent memory leaks
+  setTimeout(() => processedAuthCodes.delete(code), 5 * 60 * 1000);
 
   try {
 
@@ -2007,7 +2049,7 @@ export const getWabaPhoneNumbers = async (req, res) => {
 
 export const updateConnection = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const connectionId = req.params.id;
     const { name, is_active } = req.body;
 
@@ -2146,7 +2188,7 @@ export const deleteConnections = async (req, res) => {
     }
 
     const { validIds } = validation;
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
 
 
     const wabas = await WhatsappWaba.find({
@@ -2220,7 +2262,7 @@ export const deleteConnections = async (req, res) => {
 
 export const setPrimaryPhoneNumber = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const { phoneNumberId } = req.params;
 
     const phoneNumber = await WhatsappPhoneNumber.findOne({
@@ -2372,7 +2414,7 @@ export const assignChatToAgent = assignChatToAgentFromChat;
 
 export const getBaileysQRCode = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.owner_id;
     const { wabaId } = req.params;
     const syncChat = req.query.sync_chat === 'true';
 
@@ -2383,8 +2425,23 @@ export const getBaileysQRCode = async (req, res) => {
       });
     }
 
-    const qrData = await unifiedWhatsAppService.getQRCode(userId, wabaId);
-
+    let qrData;
+    try {
+      qrData = await unifiedWhatsAppService.getQRCode(userId, wabaId);
+    } catch (qrErr) {
+      const waba = await WhatsappWaba.findOne({ _id: wabaId, user_id: userId, deleted_at: null }).lean();
+      if (!waba) {
+        return res.status(404).json({ success: false, error: 'WABA not found' });
+      }
+      console.log(`QR requested for disconnected WABA ${wabaId}, triggering initialization... (sync_chat=${syncChat})`);
+      unifiedWhatsAppService
+        .initializeConnection(userId, 'baileys', { ...waba, sync_chat: syncChat })
+        .catch(err => console.error(`Failed to init Baileys QR for WABA ${wabaId}:`, err));
+      return res.json({
+        success: true,
+        data: { success: true, qr_code: null, status: 'generating' }
+      });
+    }
 
     const needsInit = !qrData.qr_code &&
       ['disconnected', 'qr_timeout', 'initial'].includes(qrData.status);

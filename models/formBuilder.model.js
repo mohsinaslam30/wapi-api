@@ -80,7 +80,6 @@ const formSchema = new mongoose.Schema({
 
     slug: {
         type: String,
-        unique: true
     },
 
     meta_status: {
@@ -170,6 +169,9 @@ const formSchema = new mongoose.Schema({
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },
     collection: "forms"
 });
+
+formSchema.index({ user_id: 1, waba_id: 1 }, { unique: true });
+formSchema.index({ waba_id: 1, name: 1 });
 
 
 export default mongoose.model("Form", formSchema);

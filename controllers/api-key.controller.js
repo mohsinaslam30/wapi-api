@@ -73,11 +73,19 @@ export const listApiKeys = async (req, res) => {
   try {
     const userId = req.user.id;
     const { page, limit, skip } = parsePaginationParams(req.query);
+    const { search } = req.query;
 
     const filter = {
       user_id: userId,
       deleted_at: null
     };
+
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { prefix: { $regex: search, $options: 'i' } }
+      ];
+    }
 
     const [totalItems, keys] = await Promise.all([
       ApiKey.countDocuments(filter),

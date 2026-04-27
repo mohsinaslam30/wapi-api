@@ -58,7 +58,6 @@ const chatAssignmentSchema = new mongoose.Schema({
 
 
 chatAssignmentSchema.index(
-  { sender_number: 1, receiver_number: 1, whatsapp_phone_number_id: 1 },
   { unique: true }
 );
 

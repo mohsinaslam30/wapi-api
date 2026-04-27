@@ -14,7 +14,13 @@ import {
   Team,
   Role,
   Form,
-  WhatsappCallAgent
+  WhatsappCallAgent,
+  Message,
+  MessageBot,
+  AppointmentBooking,
+  FacebookAdCampaign,
+  KanbanFunnel,
+  Segment
 } from '../models/index.js';
 
 
@@ -34,6 +40,11 @@ const COUNT_FEATURES = [
   'teams',
   'forms',
   'whatsapp_calling',
+  'message_bots',
+  'appointment_bookings',
+  'facebookAds_campaign',
+  'kanban_funnels',
+  'segments'
 ];
 
 const BOOLEAN_FEATURES = [
@@ -159,6 +170,16 @@ async function getUsageCount(userId, feature, subscription) {
       return Form.countDocuments({ ...baseQuery, user_id: uid });
     case 'whatsapp_calling':
       return WhatsappCallAgent.countDocuments({ ...baseQuery, user_id: uid });
+    case 'message_bots':
+      return MessageBot.countDocuments({ ...baseQuery, user_id: uid });
+    case 'appointment_bookings':
+      return AppointmentBooking.countDocuments({ ...baseQuery, user_id: uid });
+    case 'facebookAds_campaign':
+      return FacebookAdCampaign.countDocuments({ ...baseQuery, user_id: uid });
+    case 'kanban_funnels':
+      return KanbanFunnel.countDocuments({ deletedAt: null, userId: uid });
+    case 'segments':
+      return Segment.countDocuments({ ...baseQuery, user_id: uid });
     default:
       return 0;
   }

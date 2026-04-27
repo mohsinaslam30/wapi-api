@@ -4,7 +4,6 @@ import { Form, WhatsappWaba } from "../models/index.js";
 import { v4 as uuidv4 } from "uuid";
 
 
-
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
 const DEFAULT_SORT_FIELD = 'sort_order';
@@ -172,6 +171,20 @@ export const createForm = async (req, res) => {
         if (!waba) return res.status(404).json({ error: "WhatsApp WABA not found" });
 
         const finalSlug = slug || name.toLowerCase().replace(/\s+/g, "-");
+
+        const existingSlug = await Form.findOne({
+            user_id: userId,
+            waba_id,
+            slug: finalSlug,
+            deleted_at: null
+        });
+
+        if (existingSlug) {
+            return res.status(409).json({
+                success: false,
+                message: `Form name already exists in this WABA`
+            });
+        }
 
         const form = await Form.create({
             user_id: userId,
@@ -628,7 +641,7 @@ const transformMetaPayloadToFields = (payload) => {
 const createMetaFlow = async (wabaAccountId, accessToken, form) => {
     const API_VERSION = "v21.0";
 
-    const flowName = `${form.name}_${form._id}`
+    const flowName = form.name
         .toLowerCase()
         .replace(/[^a-z0-9_]/g, "_")
         .substring(0, 64);
@@ -1238,7 +1251,25 @@ export const updateForm = async (req, res) => {
 
         if (updateData.name) form.name = updateData.name;
         if (updateData.slug || updateData.name) {
-            form.slug = updateData.slug || form.name.toLowerCase().replace(/\s+/g, "-");
+            const newSlug = updateData.slug || (updateData.name ? updateData.name.toLowerCase().replace(/\s+/g, "-") : form.slug);
+
+            if (newSlug !== form.slug) {
+                const existingSlug = await Form.findOne({
+                    user_id: userId,
+                    waba_id: form.waba_id,
+                    slug: newSlug,
+                    deleted_at: null,
+                    _id: { $ne: formId }
+                });
+
+                if (existingSlug) {
+                    return res.status(409).json({
+                        success: false,
+                        message: `Form name already exists in this WABA`
+                    });
+                }
+                form.slug = newSlug;
+            }
         }
         if (updateData.description !== undefined) form.description = updateData.description;
         if (updateData.category) form.category = updateData.category;
@@ -1404,6 +1435,118 @@ export const getFormTemplate = async (req, res) => {
     }
 };
 
+export const migrateFlows = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { form_id, destination_waba_id } = req.body;
+
+        if (!form_id || !destination_waba_id) {
+            return res.status(400).json({
+                success: false,
+                error: "form_id and destination_waba_id are required"
+            });
+        }
+
+        const sourceForm = await Form.findOne({ _id: form_id, user_id: userId, deleted_at: null });
+        if (!sourceForm) {
+            return res.status(404).json({ success: false, error: "Source form not found" });
+        }
+
+        const sourceWabaId = sourceForm.waba_id;
+        if (!sourceWabaId) {
+            return res.status(400).json({ success: false, error: "Source form does not have an associated WABA" });
+        }
+
+        const [sourceWaba, destinationWaba] = await Promise.all([
+            WhatsappWaba.findOne({ _id: sourceWabaId, user_id: userId, deleted_at: null }),
+            WhatsappWaba.findOne({
+                $or: [
+                    { _id: destination_waba_id },
+                    { whatsapp_business_account_id: destination_waba_id }
+                ], user_id: userId, deleted_at: null
+            })
+        ]);
+
+        if (!sourceWaba || !destinationWaba) {
+            return res.status(404).json({ success: false, error: "Source or Destination WABA not found" });
+        }
+
+        const flowName = sourceForm.name;
+        if (!flowName) {
+            return res.status(400).json({ success: false, error: "Flow name could not be determined for migration" });
+        }
+
+        const API_VERSION = "v21.0";
+        try {
+            const [sourceMeta, destMeta] = await Promise.all([
+                axios.get(`https://graph.facebook.com/${API_VERSION}/${sourceWaba.whatsapp_business_account_id}`, {
+                    headers: { Authorization: `Bearer ${sourceWaba.access_token}` }
+                }),
+                axios.get(`https://graph.facebook.com/${API_VERSION}/${destinationWaba.whatsapp_business_account_id}`, {
+                    headers: { Authorization: `Bearer ${destinationWaba.access_token}` }
+                })
+            ]);
+
+            const sourceOwner = sourceMeta.data.owner?.id || sourceMeta.data.business?.id || sourceWaba.business_id;
+            const destOwner = destMeta.data.owner?.id || destMeta.data.business?.id || destinationWaba.business_id;
+
+            if (sourceOwner !== destOwner) {
+                return res.status(400).json({
+                    success: false,
+                    error: "Flows can only be migrated between WABAs owned by the same Meta business"
+                });
+            }
+        } catch (metaCheckError) {
+            if (sourceWaba.business_id !== destinationWaba.business_id) {
+                return res.status(400).json({
+                    success: false,
+                    error: "Flows can only be migrated between WABAs owned by the same Meta business"
+                });
+            }
+        }
+
+        const migrationUrl = `https://graph.facebook.com/${API_VERSION}/${destinationWaba.whatsapp_business_account_id}/migrate_flows`;
+        const migrationResponse = await axios.post(
+            migrationUrl,
+            null,
+            {
+                params: {
+                    source_waba_id: sourceWaba.whatsapp_business_account_id,
+                    source_flow_names: JSON.stringify([flowName])
+                },
+                headers: { Authorization: `Bearer ${destinationWaba.access_token}` }
+            }
+        );
+
+        const newFormData = sourceForm.toObject();
+        delete newFormData._id;
+        delete newFormData.createdAt;
+        delete newFormData.updatedAt;
+        newFormData.waba_id = destinationWaba._id;
+
+        const newLocalForm = await Form.create(newFormData);
+
+        return res.json({
+            success: true,
+            message: "Flow migrated successfully",
+            data: {
+                new_form_id: newLocalForm._id,
+                source_form_id: sourceForm._id,
+                flow_name: flowName,
+                destination_waba_id: destinationWaba._id
+            }
+        });
+
+    } catch (error) {
+        console.error("Error migrating flow:", error.response?.data || error.message);
+        return res.status(400).json({
+            success: false,
+            error: "Failed to migrate flow on Meta",
+            details: error.response?.data?.error?.message || error.message
+        });
+    }
+};
+
 const formBuilderController = {
     getAllForms,
     createForm,
@@ -1414,7 +1557,8 @@ const formBuilderController = {
     updateForm,
     deleteForm,
     getAllMetaFlows,
-    getFormTemplate
+    getFormTemplate,
+    migrateFlows
 };
 
 export default formBuilderController;

@@ -7,6 +7,10 @@ const router = express.Router();
 
 router.use(authenticate);
 
+router.get("/funnels", checkPermission('view.kanban_funnel'), submissionController.getSubmissionFunnels);
+router.get("/:id/funnel-status", checkPermission('view.kanban_funnel'), submissionController.getSubmissionKanbanStatus);
+router.post("/funnel/action", checkPermission('update.kanban_funnel'), submissionController.handleSubmissionKanbanAction);
+
 router.get("/:form_id", checkPermission('view.submissions'), submissionController.getSubmissionsByFormId);
 router.get("/:id/details", checkPermission('view.submissions'), submissionController.getSubmissionDetails);
 // router.get("/:form_id/stats", checkPermission('view.submissions'), submissionController.getSubmissionStats);

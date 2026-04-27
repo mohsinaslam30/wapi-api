@@ -29,6 +29,10 @@ const replyMaterialSchema = new mongoose.Schema({
         type: String,
         trim: true
     },
+    file_size: {
+        type: Number,
+        default: 0
+    },
     flow_id: {
         type: String,
         trim: true

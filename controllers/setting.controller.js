@@ -42,20 +42,33 @@ const getAllSettings = async (req, res) => {
   out.smtp_port = process.env.SMTP_PORT || '';
   out.smtp_user = process.env.SMTP_USER || '';
   out.smtp_pass_set = !!process.env.SMTP_PASS;
-  delete out.smtp_pass; 
+  delete out.smtp_pass;
   out.mail_from_name = process.env.MAIL_FROM_NAME || '';
   out.mail_from_email = process.env.MAIL_FROM_EMAIL || '';
   out.support_email = process.env.SUPPORT_EMAIL || '';
   out.maintenance_mode = process.env.MAINTENANCE_MODE === 'true';
+  out.google_redirect_uri = process.env.GOOGLE_REDIRECT_URI || '';
+
+  out.google_redirect_uri = `${baseUrl.replace(/\/$/, '')}/api/google/callback`;
 
   delete out.stripe_secret_key;
   delete out.stripe_webhook_secret;
   delete out.razorpay_key_secret;
   delete out.razorpay_webhook_secret;
   delete out.paypal_client_secret;
+  delete out.google_client_secret;
 
   if (out.stripe_publishable_key && out.stripe_publishable_key.length > 8) {
     out.stripe_publishable_key = out.stripe_publishable_key.substring(0, 8) + '****';
+  }
+
+  if (out.aws_access_key_id && out.aws_access_key_id.length > 8) {
+    out.aws_access_key_id = out.aws_access_key_id.substring(0, 8) + '****';
+  }
+  
+  if (out.aws_secret_access_key) {
+    out.aws_secret_access_key_set = true;
+    delete out.aws_secret_access_key;
   }
 
   if (out.razorpay_key_id && out.razorpay_key_id.length > 8) {
@@ -66,9 +79,14 @@ const getAllSettings = async (req, res) => {
     out.paypal_client_id = out.paypal_client_id.substring(0, 8) + '****';
   }
 
+  if (out.google_client_id && out.google_client_id.length > 8) {
+    out.google_client_id = out.google_client_id.substring(0, 8) + '****';
+  }
+
   const client_ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   out.client_ip = client_ip?.replace('::ffff:', '') || '';
   out.maintenance_allowed_ips = settings.maintenance_allowed_ips || [];
+  out.whatsapp_phoneno_id = settings.whatsapp_phoneno_id || process.env.PHONENO_ID || '';
 
   res.status(200).json(out);
 };
@@ -87,7 +105,7 @@ const updateSetting = async (req, res) => {
       if (uploadedFile) {
         const file = Array.isArray(uploadedFile) ? uploadedFile[0] : uploadedFile;
         if (file) {
-          processedBody[field] = `/${file.path}`;
+          processedBody[field] = file.path;
         }
       }
       else if (req.body[field] && isValidUrl(req.body[field])) {
@@ -102,41 +120,65 @@ const updateSetting = async (req, res) => {
 
     if (req.body.whatsapp_verify_token !== undefined) {
       envVars.WHATSAPP_VERIFY_TOKEN = req.body.whatsapp_verify_token;
-      delete processedBody.whatsapp_verify_token;
     }
 
     if (req.body.smtp_host !== undefined) {
       envVars.SMTP_HOST = req.body.smtp_host;
-      delete processedBody.smtp_host;
     }
     if (req.body.smtp_port !== undefined) {
       envVars.SMTP_PORT = req.body.smtp_port;
-      delete processedBody.smtp_port;
     }
     if (req.body.smtp_user !== undefined) {
       envVars.SMTP_USER = req.body.smtp_user;
-      delete processedBody.smtp_user;
     }
     if (req.body.smtp_pass !== undefined) {
       envVars.SMTP_PASS = req.body.smtp_pass;
-      delete processedBody.smtp_pass;
     }
     if (req.body.mail_from_name !== undefined) {
       envVars.MAIL_FROM_NAME = req.body.mail_from_name;
-      delete processedBody.mail_from_name;
     }
     if (req.body.mail_from_email !== undefined) {
       envVars.MAIL_FROM_EMAIL = req.body.mail_from_email;
-      delete processedBody.mail_from_email;
     }
     if (req.body.support_email !== undefined) {
       envVars.SUPPORT_EMAIL = req.body.support_email;
-      delete processedBody.support_email;
+    }
+
+    if (req.body.whatsapp_phoneno_id !== undefined) {
+      envVars.PHONENO_ID = req.body.whatsapp_phoneno_id;
+      processedBody.whatsapp_phoneno_id = req.body.whatsapp_phoneno_id;
     }
 
     if (req.body.maintenance_mode !== undefined) {
       envVars.MAINTENANCE_MODE = String(req.body.maintenance_mode);
       processedBody.maintenance_mode = req.body.maintenance_mode === true || req.body.maintenance_mode === 'true';
+    }
+
+    if (req.body.google_client_id !== undefined) {
+      envVars.GOOGLE_CLIENT_ID = req.body.google_client_id;
+      processedBody.google_client_id = req.body.google_client_id;
+    }
+    if (req.body.google_client_secret !== undefined) {
+      envVars.GOOGLE_CLIENT_SECRET = req.body.google_client_secret;
+      processedBody.google_client_secret = req.body.google_client_secret;
+    }
+
+    if (req.body.aws_access_key_id !== undefined) {
+      envVars.AWS_ACCESS_KEY_ID = req.body.aws_access_key_id;
+    }
+    if (req.body.aws_secret_access_key !== undefined) {
+      envVars.AWS_SECRET_ACCESS_KEY = req.body.aws_secret_access_key;
+    }
+    if (req.body.aws_region !== undefined) {
+      envVars.AWS_REGION = req.body.aws_region;
+    }
+    if (req.body.aws_s3_bucket !== undefined) {
+      envVars.AWS_S3_BUCKET = req.body.aws_s3_bucket;
+    }
+
+    if (req.body.is_aws_s3_enabled !== undefined) {
+      processedBody.is_aws_s3_enabled = req.body.is_aws_s3_enabled === true || req.body.is_aws_s3_enabled === 'true';
+      envVars.IS_AWS_S3_ENABLED = String(processedBody.is_aws_s3_enabled);
     }
 
     if (req.body.maintenance_allowed_ips !== undefined) {
@@ -167,6 +209,18 @@ const updateSetting = async (req, res) => {
       } else {
         processedBody.allowed_file_upload_types = req.body.allowed_file_upload_types;
       }
+    }
+    
+    if (req.body.storage_limit !== undefined) {
+      processedBody.storage_limit = parseInt(req.body.storage_limit) || 100;
+    }
+
+    if (req.body.restore_storage_on_delete !== undefined) {
+      processedBody.restore_storage_on_delete = req.body.restore_storage_on_delete === true || req.body.restore_storage_on_delete === 'true';
+    }
+
+    if (req.body.landing_page_enabled !== undefined) {
+      processedBody.landing_page_enabled = Boolean(req.body.landing_page_enabled);
     }
 
     if (req.body.default_currency !== undefined) {
@@ -686,4 +740,98 @@ const updatePayPalSettings = async (req, res) => {
   }
 };
 
-export { getAllSettings, updateSetting, testMail, updateStripeSettings, getStripeSettings, updateRazorpaySettings, getRazorpaySettings, updatePayPalSettings, getPayPalSettings };
+const getGoogleSettings = async (req, res) => {
+  try {
+    const setting = await Setting.findOne().select('google_client_id google_client_secret google_redirect_uri').lean();
+    if (!setting) {
+      return res.status(200).json({ data: null });
+    }
+
+    let maskedClientId = null;
+    if (setting.google_client_id && setting.google_client_id.length > 8) {
+      maskedClientId = setting.google_client_id.substring(0, 8) + '****';
+    }
+
+    return res.status(200).json({
+      data: {
+        google_client_id: maskedClientId,
+        google_client_secret_set: !!setting.google_client_secret,
+        google_redirect_uri: setting.google_redirect_uri || null
+      }
+    });
+  } catch (err) {
+    console.error('Error getting Google settings:', err);
+    return res.status(500).json({ success: false, message: 'Failed to get Google settings' });
+  }
+};
+
+const updateGoogleSettings = async (req, res) => {
+  try {
+    const { google_client_id, google_client_secret, google_redirect_uri } = req.body;
+
+    if (!google_client_id || typeof google_client_id !== 'string' || !google_client_id.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Google client ID is required'
+      });
+    }
+    if (!google_client_secret || typeof google_client_secret !== 'string' || !google_client_secret.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Google client secret is required'
+      });
+    }
+    if (!google_redirect_uri || typeof google_redirect_uri !== 'string' || !google_redirect_uri.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Google redirect URI is required'
+      });
+    }
+
+    let setting = await Setting.findOne();
+    if (!setting) {
+      setting = await Setting.create({});
+    }
+
+    const update = {
+      google_client_id: google_client_id.trim(),
+      google_client_secret: google_client_secret.trim(),
+      google_redirect_uri: google_redirect_uri.trim()
+    };
+
+    const updatedSetting = await Setting.findByIdAndUpdate(
+      setting._id,
+      update,
+      { returnDocument: 'after', runValidators: true }
+    );
+
+    process.env.GOOGLE_CLIENT_ID = updatedSetting.google_client_id;
+    process.env.GOOGLE_CLIENT_SECRET = updatedSetting.google_client_secret;
+    process.env.GOOGLE_REDIRECT_URI = updatedSetting.google_redirect_uri;
+
+    const envVars = {
+      GOOGLE_CLIENT_ID: updatedSetting.google_client_id,
+      GOOGLE_CLIENT_SECRET: updatedSetting.google_client_secret,
+      GOOGLE_REDIRECT_URI: updatedSetting.google_redirect_uri
+    };
+    await updateEnvFile(envVars);
+
+    const response = updatedSetting.toObject();
+    delete response.google_client_secret;
+    response.google_client_secret_set = true;
+
+    return res.status(200).json({
+      success: true,
+      message: 'Google OAuth settings configured successfully',
+      data: response
+    });
+  } catch (err) {
+    console.error('Error updating Google settings:', err);
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Failed to configure Google OAuth'
+    });
+  }
+};
+
+export { getAllSettings, updateSetting, testMail, updateStripeSettings, getStripeSettings, updateRazorpaySettings, getRazorpaySettings, updatePayPalSettings, getPayPalSettings, updateGoogleSettings, getGoogleSettings };

@@ -66,12 +66,14 @@ const captureRawBody = (req, res, next) => {
 };
 
 app.use(captureRawBody);
-app.use(rtInit);
+// app.use(rtInit);
 
 import { handleStripeWebhook, handleRazorpayWebhook, handlePayPalWebhook } from "./controllers/webhook.controller.js";
 app.post("/api/webhook/stripe", handleStripeWebhook);
 app.post("/api/webhook/razorpay", handleRazorpayWebhook);
 app.post("/api/webhook/paypal", handlePayPalWebhook);
+
+app.use("/webhook/facebook/leadgen", facebookLeadRoutes);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -80,11 +82,11 @@ app.use('/install', express.static(path.join(__dirname, 'public/install')));
 
 app.use('/api', denyMutationInDemo);
 
-import { initializeInstaller, createInstallationMiddleware } from './lib/install.js';
+// import { initializeInstaller, createInstallationMiddleware } from './lib/install.js';
 
-await initializeInstaller(app);
+// await initializeInstaller(app);
 
-app.use(createInstallationMiddleware());
+// app.use(createInstallationMiddleware());
 
 import webhookRoutes from "./routes/webhook.routes.js";
 app.use("/api/webhook", webhookRoutes);
@@ -136,8 +138,13 @@ import formBuilderRoutes from "./routes/formBuilder.route.js";
 import submissionRoutes from "./routes/submission.route.js";
 import quickReplyRoutes from "./routes/quick-reply.routes.js";
 import impersonationRoutes from "./routes/impersonation.routes.js";
+import kanbanFunnelRoutes from "./routes/kanban-funnel.routes.js";
+import segmentRoutes from "./routes/segment.routes.js";
 import { checkImpersonationStatus, restrictImpersonationActions } from "./middlewares/impersonation.js";
 
+import facebookRoutes from "./routes/facebook.routes.js";
+import facebookAdRoutes from "./routes/facebook-ad-campaign.routes.js";
+import facebookLeadRoutes from "./routes/facebook-lead.routes.js";
 
 import wabaConfigurationRoutes from "./routes/waba-configuration.routes.js";
 import messageBotRoutes from "./routes/message-bot.routes.js";
@@ -171,15 +178,15 @@ app.get("/api/is-demo-mode", async (req, res) => {
     return res.status(200).json({
       success: true,
       is_demo_mode,
+      logo_light_url: setting?.logo_light_url,
+      logo_dark_url: setting?.logo_dark_url,
+      favicon_url: setting?.favicon_url,
       ...(is_demo_mode
         ? {
           demo_user_email: setting?.demo_user_email,
           demo_user_password: setting?.demo_user_password,
           demo_agent_email: setting?.demo_agent_email,
           demo_agent_password: setting?.demo_agent_password,
-          logo_light_url: setting?.logo_light_url,
-          logo_dark_url: setting?.logo_dark_url,
-          favicon_url: setting?.favicon_url,
         }
         : {}),
     });
@@ -243,6 +250,11 @@ app.use("/api/google", googleRoutes);
 app.use("/api/forms", formBuilderRoutes);
 app.use("/api/submissions", submissionRoutes);
 app.use("/api/quick-replies", quickReplyRoutes);
+app.use("/api/kanban-funnels", kanbanFunnelRoutes);
+app.use("/api/segments", segmentRoutes);
+app.use("/api/facebook", facebookRoutes);
+app.use("/api/facebook-ads", facebookAdRoutes);
+app.use("/api/facebook-leads", facebookLeadRoutes);
 
 app.use("/api/waba-configurations", wabaConfigurationRoutes);
 app.use("/api/message-bots", messageBotRoutes);
@@ -272,7 +284,7 @@ app.post("/webhook/whatsapp", (req, res) => {
   const change = req.body.entry?.[0]?.changes?.[0];
   const messages = change?.value?.messages;
 
-  console.log("Messages:", messages);
+  console.log("Messages:", messages[0].errors);
 
   if (value?.statuses) {
 

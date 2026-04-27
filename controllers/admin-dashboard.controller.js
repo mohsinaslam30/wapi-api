@@ -6,7 +6,7 @@ import { PaymentHistory } from '../models/payment-history.model.js';
 import AIModel from '../models/ai-model.model.js';
 import ContactInquiry from '../models/contact-inquiries.model.js';
 import { Setting, Role } from '../models/index.js';
-import { getExchangeRate } from '../utils/currency.service.js';
+import { getExchangeRate, formatAmount } from '../utils/currency.service.js';
 
 const buildDateRange = (dateRange, startDate, endDate) => {
   if (!dateRange) {
@@ -225,7 +225,7 @@ const getRevenueData = async (defaultCurrencyCode = 'INR') => {
       const rate = await getExchangeRate(curr, defaultCurrencyCode);
       total += row.total * rate;
     }
-    return total;
+    return formatAmount(total);
   };
 
   return {
@@ -277,7 +277,7 @@ const getChartsData = async (range, defaultCurrencyCode = 'INR') => {
     if (!planMap[planName]) {
       planMap[planName] = { _id: planName, totalRevenue: 0, count: 0 };
     }
-    planMap[planName].totalRevenue += row.totalRevenue * rate;
+    planMap[planName].totalRevenue = formatAmount(planMap[planName].totalRevenue + (row.totalRevenue * rate));
     planMap[planName].count += row.count;
   }
 
@@ -332,7 +332,7 @@ const getChartsData = async (range, defaultCurrencyCode = 'INR') => {
     if (!graphMap[month]) {
       graphMap[month] = { _id: month, totalRevenue: 0, transactionCount: 0 };
     }
-    graphMap[month].totalRevenue += row.totalRevenue * rate;
+    graphMap[month].totalRevenue = formatAmount(graphMap[month].totalRevenue + (row.totalRevenue * rate));
     graphMap[month].transactionCount += row.transactionCount;
   }
 
@@ -467,8 +467,8 @@ const getTablesData = async (range, defaultCurrencyCode = 'INR') => {
 
   for (let sub of newSubscriptions) {
     const rate = await getExchangeRate(sub.subscriptionCurrency || 'INR', defaultCurrencyCode);
-    if (sub.amount_paid) sub.amount_paid *= rate;
-    if (sub.planPrice) sub.planPrice *= rate;
+    if (sub.amount_paid) sub.amount_paid = formatAmount(sub.amount_paid * rate);
+    if (sub.planPrice) sub.planPrice = formatAmount(sub.planPrice * rate);
     sub.currency = defaultCurrencyCode;
   }
 
@@ -530,8 +530,8 @@ const getTablesData = async (range, defaultCurrencyCode = 'INR') => {
 
   for (let sub of cancelledSubscriptions) {
     const rate = await getExchangeRate(sub.subscriptionCurrency || 'INR', defaultCurrencyCode);
-    if (sub.amount_paid) sub.amount_paid *= rate;
-    if (sub.planPrice) sub.planPrice *= rate;
+    if (sub.amount_paid) sub.amount_paid = formatAmount(sub.amount_paid * rate);
+    if (sub.planPrice) sub.planPrice = formatAmount(sub.planPrice * rate);
     sub.currency = defaultCurrencyCode;
   }
 

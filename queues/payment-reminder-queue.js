@@ -50,7 +50,6 @@ const initializeQueueSystem = () => {
           return;
         }
 
-        // Only send reminder if still pending
         if (transaction.status !== 'pending') {
           console.log(`[PaymentReminderWorker] Transaction ${transactionId} is ${transaction.status}. Skipping reminder.`);
           return;
@@ -69,10 +68,9 @@ const initializeQueueSystem = () => {
             return;
         }
 
-        let messageText = settings.payment_reminder_message || 
+        let messageText = settings.payment_reminder_message ||
           '🔔 *Payment Reminder*\n\nYou have a pending payment of *{currency} {amount}* for *{description}*.\n\nPlease complete it using the link: {payment_link}';
 
-        // Variable replacement
         const amountDisplay = (transaction.amount / 100).toFixed(2);
         const currency = transaction.currency || 'INR';
         const description = transaction.metadata.description || 'Service';

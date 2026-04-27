@@ -202,7 +202,7 @@ export const updateUserSettings = async (req, res) => {
 
       if (req.files && req.files.bg_image) {
         const file = Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image;
-        userSettings.bg_image = `/${file.path}`;
+        userSettings.bg_image = file.path.startsWith('http') ? file.path : `/${file.path}`;
         userSettings.bg_color = null; 
       } else if (body.bg_image === 'null' || body.bg_image === '') {
         userSettings.bg_image = null;
@@ -230,7 +230,11 @@ export const updateUserSettings = async (req, res) => {
         payment_reminder_unit: payment_reminder_unit,
         payment_reminder_message: payment_reminder_message,
         disable_admin_quick_reply: disable_admin_quick_reply ?? false,
-        bg_image: (req.files && req.files.bg_image) ? `/${(Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path}` : null
+        bg_image: (req.files && req.files.bg_image) ? (
+          (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path.startsWith('http') 
+            ? (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path 
+            : `/${(Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path}`
+        ) : null
       });
     }
 

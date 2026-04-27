@@ -3,7 +3,10 @@ import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import Contact from '../models/contact.model.js';
 import WhatsappWaba from '../models/whatsapp-waba.model.js';
+import * as segmentService from '../services/segment.service.js';
 import { processCampaignInBackground } from '../utils/campaign-processing.js';
+import { saveBufferLocally } from '../utils/whatsapp-message-handler.js';
+import { getWhatsAppTypeFromMime } from '../utils/uploadMediaToWhatsapp.js';
 
 const API_VERSION = 'v23.0';
 
@@ -52,6 +55,7 @@ export const createCampaign = async (req, res) => {
       specific_contacts = [],
       contact_numbers = [],
       tag_ids = [],
+      segment_ids = [],
       variables_mapping = {},
       media_url,
       coupon_code,
@@ -88,8 +92,30 @@ export const createCampaign = async (req, res) => {
       return res.status(400).json({ error: 'Tag IDs are required for this recipient type' });
     }
 
-    if (is_scheduled && !scheduled_at) {
-      return res.status(400).json({ error: 'Scheduled time is required for scheduled campaigns' });
+    if (recipient_type === 'segments' && (!segment_ids || segment_ids.length === 0)) {
+      return res.status(400).json({ error: 'Segment IDs are required for this recipient type' });
+    }
+
+    const isScheduledBool =
+      is_scheduled === true ||
+      is_scheduled === 'true' ||
+      is_scheduled === 1 ||
+      is_scheduled === '1';
+
+    if (isScheduledBool && !scheduled_at) {
+      return res.status(400).json({
+        error: 'Scheduled time is required for scheduled campaigns'
+      });
+    }
+
+    let parsedScheduledAt = null;
+    if (isScheduledBool && scheduled_at) {
+      parsedScheduledAt = new Date(scheduled_at);
+      if (isNaN(parsedScheduledAt.getTime())) {
+        return res.status(400).json({
+          error: 'Invalid scheduled time format'
+        });
+      }
     }
 
     let wabaQuery = {
@@ -111,7 +137,7 @@ export const createCampaign = async (req, res) => {
     if (!waba) {
       return res.status(404).json({ error: 'WhatsApp WABA not found' });
     }
-    
+
     waba_id = waba._id.toString();
 
     let templateQuery = {
@@ -130,13 +156,19 @@ export const createCampaign = async (req, res) => {
     if (!template) {
       return res.status(404).json({ error: 'Template not found' });
     }
-    
+
     template_id = template._id.toString();
 
     const templateType = (template.template_type || '').toLowerCase();
     const isCarouselTemplate = ['carousel_product', 'carousel_media'].includes(templateType);
-    const carouselProducts = req.body.carousel_products;
-    const carouselCardsData = req.body.carousel_cards_data;
+    const carouselProducts = typeof req.body.carousel_products === 'string' ? JSON.parse(req.body.carousel_products) : req.body.carousel_products;
+    const carouselCardsData = typeof req.body.carousel_cards_data === 'string' ? JSON.parse(req.body.carousel_cards_data) : req.body.carousel_cards_data;
+
+    specific_contacts = typeof specific_contacts === 'string' ? JSON.parse(specific_contacts) : specific_contacts;
+    contact_numbers = typeof contact_numbers === 'string' ? JSON.parse(contact_numbers) : contact_numbers;
+    tag_ids = typeof tag_ids === 'string' ? JSON.parse(tag_ids) : tag_ids;
+    segment_ids = typeof segment_ids === 'string' ? JSON.parse(segment_ids) : segment_ids;
+
     const isProductCarousel = isCarouselTemplate && template.carousel_cards?.length > 0 &&
       template.carousel_cards[0].components?.some(c => (c.type || '').toLowerCase() === 'header' && (c.format || '').toLowerCase() === 'product');
     if (isCarouselTemplate) {
@@ -175,15 +207,24 @@ export const createCampaign = async (req, res) => {
           deleted_at: null
         });
       } else if (contact_numbers && contact_numbers.length > 0) {
+        const cleanedNumbers = contact_numbers.map(num => num.replace(/[\s\-()\+]/g, ''));
+        const invalidNumbers = cleanedNumbers.filter(num => !/^\d{6,15}$/.test(num));
+
+        if (invalidNumbers.length > 0) {
+          return res.status(400).json({
+            error: `Invalid contact numbers: ${invalidNumbers.join(', ')}. Must be 6-15 digits.`
+          });
+        }
+
         contacts = await Contact.find({
-          phone_number: { $in: contact_numbers },
+          phone_number: { $in: cleanedNumbers },
           created_by: userId,
           deleted_at: null
         });
 
         const foundNumbers = contacts.map(c => c.phone_number);
-        const missingNumbers = contact_numbers.filter(num => !foundNumbers.includes(num));
-        
+        const missingNumbers = cleanedNumbers.filter(num => !foundNumbers.includes(num));
+
         if (missingNumbers.length > 0) {
           const newContactsToInsert = missingNumbers.map(num => ({
             phone_number: num,
@@ -202,6 +243,8 @@ export const createCampaign = async (req, res) => {
         created_by: userId,
         deleted_at: null
       });
+    } else if (recipient_type === 'segments') {
+      contacts = await segmentService.getContactsForSegments(segment_ids, userId);
     }
 
     if (contacts.length === 0) {
@@ -213,6 +256,40 @@ export const createCampaign = async (req, res) => {
       phone_number: contact.phone_number,
       status: 'pending'
     }));
+
+    const baseUrl = process.env.APP_URL || (req ? `${req.protocol}://${req.get('host')}` : '');
+    const uploadedFileUrl = req.file || (req.files && req.files['file_url'] ? req.files['file_url'][0] : null);
+    const carouselUploadedFiles = req.files && req.files['carousel_files'] ? req.files['carousel_files'] : [];
+
+    let finalMediaUrl = media_url;
+    if (uploadedFileUrl) {
+      finalMediaUrl = uploadedFileUrl.path.startsWith('http') || uploadedFileUrl.path.startsWith('/') ? uploadedFileUrl.path : `/${uploadedFileUrl.path}`;
+      if (!finalMediaUrl.startsWith('http')) {
+        finalMediaUrl = `${baseUrl}${finalMediaUrl}`;
+      }
+    }
+
+    let resolvedCarouselCardsData = carouselCardsData;
+    if (carouselUploadedFiles.length > 0) {
+      const parsed = Array.isArray(resolvedCarouselCardsData) ? resolvedCarouselCardsData : (typeof resolvedCarouselCardsData === 'string' ? JSON.parse(resolvedCarouselCardsData) : []);
+      resolvedCarouselCardsData = await Promise.all(parsed.map(async (card, index) => {
+        const file = carouselUploadedFiles[index];
+        if (file) {
+          let fullLink = file.path.startsWith('http') || file.path.startsWith('/') ? file.path : `/${file.path}`;
+          if (!fullLink.startsWith('http')) {
+            fullLink = `${baseUrl}${fullLink}`;
+          }
+          return {
+            ...card,
+            header: {
+              type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+              link: fullLink
+            }
+          };
+        }
+        return card;
+      }));
+    }
 
     const campaign = await Campaign.create({
       name,
@@ -226,15 +303,17 @@ export const createCampaign = async (req, res) => {
       recipient_type,
       specific_contacts: recipient_type === 'specific_contacts' ? specific_contacts : [],
       tag_ids: recipient_type === 'tags' ? tag_ids : [],
-      variables_mapping,
-      media_url,
+      segment_ids: recipient_type === 'segments' ? segment_ids : [],
+
+      variables_mapping: typeof variables_mapping === 'string' ? JSON.parse(variables_mapping) : variables_mapping,
+      media_url: finalMediaUrl,
       coupon_code: coupon_code || null,
-      carousel_products: carousel_products && Array.isArray(carousel_products) ? carousel_products : undefined,
-      carousel_cards_data: carousel_cards_data && Array.isArray(carousel_cards_data) ? carousel_cards_data : undefined,
+      carousel_products: carouselProducts && Array.isArray(carouselProducts) ? carouselProducts : undefined,
+      carousel_cards_data: resolvedCarouselCardsData && Array.isArray(resolvedCarouselCardsData) ? resolvedCarouselCardsData : undefined,
       offer_expiration_minutes: offer_expiration_minutes ?? null,
-      is_scheduled,
-      scheduled_at: is_scheduled ? new Date(scheduled_at) : null,
-      status: is_scheduled ? 'scheduled' : 'draft',
+      is_scheduled: isScheduledBool,
+      scheduled_at: parsedScheduledAt,
+      status: isScheduledBool ? 'scheduled' : 'draft',
       stats: {
         total_recipients: contacts.length,
         pending_count: contacts.length
@@ -242,7 +321,7 @@ export const createCampaign = async (req, res) => {
       recipients
     });
 
-    if (!is_scheduled) {
+    if (!isScheduledBool) {
       campaign.status = 'sending';
       campaign.sent_at = new Date();
       await campaign.save();
@@ -389,7 +468,8 @@ export const getCampaignById = async (req, res) => {
       .populate('template_id')
       .populate('waba_id', 'whatsapp_business_account_id')
       .populate('specific_contacts', 'name phone_number')
-      .populate('tag_ids', 'label color');
+      .populate('tag_ids', 'label color')
+      .populate('segment_ids', 'name');
 
     if (!campaign) {
       return res.status(404).json({
@@ -424,6 +504,17 @@ export const updateCampaign = async (req, res) => {
     delete updateData.recipients;
     delete updateData.sent_at;
 
+    if (updateData.segment_ids && typeof updateData.segment_ids === 'string') {
+      updateData.segment_ids = JSON.parse(updateData.segment_ids);
+    }
+    if (updateData.tag_ids && typeof updateData.tag_ids === 'string') {
+      updateData.tag_ids = JSON.parse(updateData.tag_ids);
+    }
+    if (updateData.specific_contacts && typeof updateData.specific_contacts === 'string') {
+      updateData.specific_contacts = JSON.parse(updateData.specific_contacts);
+    }
+
+
     const campaign = await Campaign.findOne({
       _id: id,
       user_id: userId,
@@ -445,14 +536,34 @@ export const updateCampaign = async (req, res) => {
     }
 
     if (updateData.is_scheduled !== undefined) {
-      if (updateData.is_scheduled && !updateData.scheduled_at) {
+      const isScheduledUpdate =
+        updateData.is_scheduled === true ||
+        updateData.is_scheduled === 'true' ||
+        updateData.is_scheduled === 1 ||
+        updateData.is_scheduled === '1';
+
+      if (isScheduledUpdate && !updateData.scheduled_at) {
         return res.status(400).json({
           success: false,
           error: 'Scheduled time is required when enabling scheduling'
         });
       }
-      updateData.status = updateData.is_scheduled ? 'scheduled' : 'draft';
-      updateData.scheduled_at = updateData.is_scheduled ? new Date(updateData.scheduled_at) : null;
+
+      if (isScheduledUpdate && updateData.scheduled_at) {
+        const parsedDate = new Date(updateData.scheduled_at);
+        if (isNaN(parsedDate.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid scheduled time format'
+          });
+        }
+        updateData.scheduled_at = parsedDate;
+      } else {
+        updateData.scheduled_at = null;
+      }
+
+      updateData.status = isScheduledUpdate ? 'scheduled' : 'draft';
+      updateData.is_scheduled = isScheduledUpdate;
     }
 
     const updatedCampaign = await Campaign.findByIdAndUpdate(

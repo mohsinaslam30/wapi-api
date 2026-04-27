@@ -1,43 +1,43 @@
-import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
-import { User, Subscription, Plan, Role } from '../models/index.js';
-import { sendMail } from '../utils/mail.js';
+import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import { User, Subscription, Plan, Role, Setting } from "../models/index.js";
+import { sendMail } from "../utils/mail.js";
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
-const DEFAULT_SORT_FIELD = 'created_at';
+const DEFAULT_SORT_FIELD = "created_at";
 const DEFAULT_SORT_ORDER = -1;
 const MAX_LIMIT = 100;
 
 const ALLOWED_SORT_FIELDS = [
-  '_id',
-  'name',
-  'email',
-  'phone',
-  'role_id',
-  'status',
-  'created_at',
-  'last_login'
+  "_id",
+  "name",
+  "email",
+  "phone",
+  "role_id",
+  "status",
+  "created_at",
+  "last_login",
 ];
 
 const SORT_ORDER = {
   ASC: 1,
-  DESC: -1
+  DESC: -1,
 };
 
-const ALLOWED_ROLES = ['user', 'agent', 'super_admin'];
+const ALLOWED_ROLES = ["user", "agent", "super_admin"];
 const BCRYPT_SALT_ROUNDS = 10;
 const PASSWORD_MIN_LENGTH = 8;
 
 const PLAN_SENSITIVE_FIELDS =
-  '-stripe_price_id -stripe_product_id -stripe_payment_link_id -stripe_payment_link_url -razorpay_plan_id';
+  "-stripe_price_id -stripe_product_id -stripe_payment_link_id -stripe_payment_link_url -razorpay_plan_id";
 
 const parsePaginationParams = (query) => {
   const page = Math.max(1, parseInt(query.page, 10) || DEFAULT_PAGE);
   const limit = Math.max(
     1,
-    Math.min(MAX_LIMIT, parseInt(query.limit, 10) || DEFAULT_LIMIT)
+    Math.min(MAX_LIMIT, parseInt(query.limit, 10) || DEFAULT_LIMIT),
   );
   const skip = (page - 1) * limit;
 
@@ -50,35 +50,53 @@ const parseSortParams = (query) => {
     : DEFAULT_SORT_FIELD;
 
   const sortOrder =
-    query.sort_order?.toUpperCase() === 'ASC'
+    query.sort_order?.toUpperCase() === "ASC"
       ? SORT_ORDER.ASC
       : DEFAULT_SORT_ORDER;
 
   return { sortField, sortOrder };
 };
 
-const buildSearchQuery = (searchTerm) => {
-  if (!searchTerm || searchTerm.trim() === '') {
+const buildSearchQuery = async (searchTerm) => {
+  if (!searchTerm || searchTerm.trim() === "") {
     return {};
   }
 
   const sanitizedSearch = searchTerm.trim();
+  const regex = { $regex: sanitizedSearch, $options: "i" };
 
-  return {
-    $or: [
-      { name: { $regex: sanitizedSearch, $options: 'i' } },
-      { email: { $regex: sanitizedSearch, $options: 'i' } },
-      { phone: { $regex: sanitizedSearch, $options: 'i' } }
-    ]
-  };
+  const conditions = [{ name: regex }, { email: regex }, { phone: regex }];
+
+  try {
+    const matchingPlans = await Plan.find({
+      name: regex,
+      deleted_at: null,
+    }).select("_id");
+    if (matchingPlans.length > 0) {
+      const planIds = matchingPlans.map((p) => p._id);
+      const matchingSubscriptions = await Subscription.find({
+        plan_id: { $in: planIds },
+        deleted_at: null,
+      }).select("user_id");
+
+      if (matchingSubscriptions.length > 0) {
+        const userIds = matchingSubscriptions.map((s) => s.user_id);
+        conditions.push({ _id: { $in: userIds } });
+      }
+    }
+  } catch (err) {
+    console.error("Error searching by plan name:", err);
+  }
+
+  return { $or: conditions };
 };
 
 const validateAndFilterIds = (ids) => {
   if (!ids || !Array.isArray(ids) || ids.length === 0) {
     return {
       isValid: false,
-      message: 'User IDs array is required and must not be empty',
-      validIds: []
+      message: "User IDs array is required and must not be empty",
+      validIds: [],
     };
   }
 
@@ -87,53 +105,79 @@ const validateAndFilterIds = (ids) => {
   if (validIds.length === 0) {
     return {
       isValid: false,
-      message: 'No valid user IDs provided',
-      validIds: []
+      message: "No valid user IDs provided",
+      validIds: [],
     };
   }
 
   return {
     isValid: true,
-    validIds
+    validIds,
   };
 };
 
 const normalizeBooleanQuery = (value) => {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    if (value.toLowerCase() === 'true') return true;
-    if (value.toLowerCase() === 'false') return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
   }
   return null;
 };
 
 const validateUserCreationInput = (data) => {
-  const { name, email, password, phone, country, country_code: countryCode, note } = data;
+  const {
+    name,
+    email,
+    password,
+    phone,
+    country,
+    country_code: countryCode,
+    note,
+  } = data;
   const errors = [];
 
-  if (!name) errors.push('Name is required');
-  if (!email) errors.push('Email is required');
-  if (!password) errors.push('Password is required');
+  if (!name) errors.push("Name is required");
+  if (!email) errors.push("Email is required");
+  if (!password) errors.push("Password is required");
 
-  if (name && (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 50)) {
-    errors.push('Name must be between 2 and 50 characters');
+  if (
+    name &&
+    (typeof name !== "string" ||
+      name.trim().length < 2 ||
+      name.trim().length > 50)
+  ) {
+    errors.push("Name must be between 2 and 50 characters");
   }
 
-  if (email && (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
-    errors.push('Invalid email format');
+  if (
+    email &&
+    (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+  ) {
+    errors.push("Invalid email format");
   }
 
-  if (password && (typeof password !== 'string' || password.length < PASSWORD_MIN_LENGTH)) {
-    errors.push(`Password must be at least ${PASSWORD_MIN_LENGTH} characters long`);
+  if (
+    password &&
+    (typeof password !== "string" || password.length < PASSWORD_MIN_LENGTH)
+  ) {
+    errors.push(
+      `Password must be at least ${PASSWORD_MIN_LENGTH} characters long`,
+    );
   }
 
-  if (phone && (typeof phone !== 'string' || phone.trim().length < 7 || phone.trim().length > 15)) {
-    errors.push('Phone must be between 7 and 15 digits');
+  if (
+    phone &&
+    (typeof phone !== "string" ||
+      phone.trim().length < 6 ||
+      phone.trim().length > 15)
+  ) {
+    errors.push("Phone must be between 6 and 15 digits");
   }
 
   return {
     isValid: errors.length === 0,
-    errors
+    errors,
   };
 };
 
@@ -151,14 +195,16 @@ const buildUserResponseWithPlan = (user, subscriptionMapEntry) => {
     email_verified: user.email_verified,
     last_login: user.last_login,
     created_at: user.created_at,
-    updated_at: user.updated_at
+    updated_at: user.updated_at,
+    storage_limit: `${user.storage_limit || 0} MB`,
+    storage_used: `${parseFloat(((user.storage_used || 0) / (1024 * 1024)).toFixed(2))} MB`,
   };
 
   if (!subscriptionMapEntry) {
     return {
       ...baseUser,
       current_subscription: null,
-      current_plan: null
+      current_plan: null,
     };
   }
 
@@ -168,30 +214,33 @@ const buildUserResponseWithPlan = (user, subscriptionMapEntry) => {
     ...baseUser,
     current_subscription: subscription
       ? {
-        _id: subscription._id,
-        status: subscription.status,
-        started_at: subscription.started_at,
-        trial_ends_at: subscription.trial_ends_at,
-        current_period_start: subscription.current_period_start,
-        current_period_end: subscription.current_period_end,
-        expires_at: subscription.expires_at,
-        cancelled_at: subscription.cancelled_at,
-        payment_gateway: subscription.payment_gateway,
-        payment_method: subscription.payment_method,
-        payment_status: subscription.payment_status,
-        auto_renew: subscription.auto_renew
-      }
+          _id: subscription._id,
+          status: subscription.status,
+          started_at: subscription.started_at,
+          trial_ends_at: subscription.trial_ends_at,
+          current_period_start: subscription.current_period_start,
+          current_period_end: subscription.current_period_end,
+          expires_at: subscription.expires_at,
+          cancelled_at: subscription.cancelled_at,
+          payment_gateway: subscription.payment_gateway,
+          payment_method: subscription.payment_method,
+          payment_status: subscription.payment_status,
+          auto_renew: subscription.auto_renew,
+          features: subscription.features,
+          is_custom: subscription.is_custom,
+          duration: subscription.duration,
+        }
       : null,
     current_plan: plan
       ? {
-        _id: plan._id,
-        name: plan.name,
-        slug: plan.slug,
-        price: plan.price,
-        billing_cycle: plan.billing_cycle,
-        features: plan.features
-      }
-      : null
+          _id: plan._id,
+          name: plan.name,
+          slug: plan.slug,
+          price: plan.price,
+          billing_cycle: plan.billing_cycle,
+          features: plan.features,
+        }
+      : null,
   };
 };
 
@@ -204,11 +253,11 @@ const fetchLatestSubscriptionsForUsers = async (userIds) => {
     user_id: { $in: userIds },
     deleted_at: null,
     $or: [
-      { status: { $in: ['active', 'trial'] } },
-      { payment_gateway: 'manual', status: 'pending' }
-    ]
+      { status: { $in: ["active", "trial"] } },
+      { payment_gateway: "manual", status: "pending" },
+    ],
   })
-    .populate('plan_id', PLAN_SENSITIVE_FIELDS)
+    .populate("plan_id", PLAN_SENSITIVE_FIELDS)
     .sort({ created_at: -1 })
     .lean();
 
@@ -219,7 +268,7 @@ const fetchLatestSubscriptionsForUsers = async (userIds) => {
     if (!subscriptionMap[key]) {
       subscriptionMap[key] = {
         subscription: sub,
-        plan: sub.plan_id || null
+        plan: sub.plan_id || null,
       };
     }
   }
@@ -231,14 +280,14 @@ export const getAllUsers = async (req, res) => {
   try {
     const { page, limit, skip } = parsePaginationParams(req.query);
     const { sortField, sortOrder } = parseSortParams(req.query);
-    const searchTerm = req.query.search || '';
+    const searchTerm = req.query.search || "";
     const { status, plan_id: planId, plan_slug: planSlug } = req.query;
 
     const userQuery = {
-      deleted_at: null
+      deleted_at: null,
     };
 
-    const searchQuery = buildSearchQuery(searchTerm);
+    const searchQuery = await buildSearchQuery(searchTerm);
     Object.assign(userQuery, searchQuery);
 
     if (status !== undefined) {
@@ -246,7 +295,7 @@ export const getAllUsers = async (req, res) => {
       if (normalizedStatus === null) {
         return res.status(400).json({
           success: false,
-          message: 'Status must be a boolean value (true/false)'
+          message: "Status must be a boolean value (true/false)",
         });
       }
       userQuery.status = normalizedStatus;
@@ -259,7 +308,7 @@ export const getAllUsers = async (req, res) => {
         if (!mongoose.Types.ObjectId.isValid(planId)) {
           return res.status(400).json({
             success: false,
-            message: 'Valid plan_id is required'
+            message: "Valid plan_id is required",
           });
         }
         planIds.push(new mongoose.Types.ObjectId(planId));
@@ -268,15 +317,15 @@ export const getAllUsers = async (req, res) => {
       if (planSlug) {
         const planDoc = await Plan.findOne({
           slug: planSlug,
-          deleted_at: null
+          deleted_at: null,
         })
-          .select('_id')
+          .select("_id")
           .lean();
 
         if (!planDoc && !planId) {
           return res.status(404).json({
             success: false,
-            message: 'Plan not found for provided plan_slug'
+            message: "Plan not found for provided plan_slug",
           });
         }
 
@@ -291,14 +340,14 @@ export const getAllUsers = async (req, res) => {
         const subsForPlan = await Subscription.find({
           plan_id: { $in: planIds },
           deleted_at: null,
-          status: { $in: ['active', 'trial'] },
-          current_period_end: { $gte: now }
+          status: { $in: ["active", "trial"] },
+          current_period_end: { $gte: now },
         })
-          .select('user_id')
+          .select("user_id")
           .lean();
 
         const userIds = [
-          ...new Set(subsForPlan.map((s) => s.user_id.toString()))
+          ...new Set(subsForPlan.map((s) => s.user_id.toString())),
         ];
 
         if (userIds.length === 0) {
@@ -310,14 +359,14 @@ export const getAllUsers = async (req, res) => {
                 currentPage: page,
                 totalPages: 0,
                 totalItems: 0,
-                itemsPerPage: limit
-              }
-            }
+                itemsPerPage: limit,
+              },
+            },
           });
         }
 
         userQuery._id = {
-          $in: userIds.map((id) => new mongoose.Types.ObjectId(id))
+          $in: userIds.map((id) => new mongoose.Types.ObjectId(id)),
         };
       }
     }
@@ -325,17 +374,16 @@ export const getAllUsers = async (req, res) => {
     const totalCount = await User.countDocuments(userQuery);
 
     const users = await User.find(userQuery)
-      .select('-password')
-      .populate('role_id')
+      .select("-password")
+      .populate("role_id")
       .sort({ [sortField]: sortOrder })
       .skip(skip)
       .limit(limit)
       .lean();
 
     const userIdsOnPage = users.map((u) => u._id);
-    const subscriptionMap = await fetchLatestSubscriptionsForUsers(
-      userIdsOnPage
-    );
+    const subscriptionMap =
+      await fetchLatestSubscriptionsForUsers(userIdsOnPage);
 
     const usersWithPlan = users.map((user) => {
       const entry = subscriptionMap[user._id.toString()] || null;
@@ -350,16 +398,16 @@ export const getAllUsers = async (req, res) => {
           currentPage: page,
           totalPages: Math.ceil(totalCount / limit),
           totalItems: totalCount,
-          itemsPerPage: limit
-        }
-      }
+          itemsPerPage: limit,
+        },
+      },
     });
   } catch (error) {
-    console.error('Error retrieving users:', error);
+    console.error("Error retrieving users:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to retrieve users',
-      error: error.message
+      message: "Failed to retrieve users",
+      error: error.message,
     });
   }
 };
@@ -371,22 +419,22 @@ export const getUserById = async (req, res) => {
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: 'Valid user ID is required'
+        message: "Valid user ID is required",
       });
     }
 
     const user = await User.findOne({
       _id: id,
-      deleted_at: null
+      deleted_at: null,
     })
-      .populate('role_id')
-      .select('-password')
+      .populate("role_id")
+      .select("-password")
       .lean();
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: 'User not found'
+        message: "User not found",
       });
     }
 
@@ -396,14 +444,14 @@ export const getUserById = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: userWithPlan
+      data: userWithPlan,
     });
   } catch (error) {
-    console.error('Error retrieving user:', error);
+    console.error("Error retrieving user:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to retrieve user',
-      error: error.message
+      message: "Failed to retrieve user",
+      error: error.message,
     });
   }
 };
@@ -420,36 +468,37 @@ export const updateUser = async (req, res) => {
       note,
       role_id,
       status,
-      email_verified: emailVerified
+      email_verified: emailVerified,
+      storage_limit,
     } = req.body;
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         success: false,
-        message: 'Valid user ID is required'
+        message: "Valid user ID is required",
       });
     }
 
     const user = await User.findOne({
       _id: id,
-      deleted_at: null
+      deleted_at: null,
     });
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: 'User not found'
+        message: "User not found",
       });
     }
 
     if (email !== undefined) {
       const normalizedEmail =
-        typeof email === 'string' ? email.toLowerCase().trim() : email;
+        typeof email === "string" ? email.toLowerCase().trim() : email;
 
       if (!normalizedEmail) {
         return res.status(400).json({
           success: false,
-          message: 'Email cannot be empty'
+          message: "Email cannot be empty",
         });
       }
 
@@ -457,13 +506,13 @@ export const updateUser = async (req, res) => {
         const existingEmailUser = await User.findOne({
           email: normalizedEmail,
           _id: { $ne: user._id },
-          deleted_at: null
+          deleted_at: null,
         });
 
         if (existingEmailUser) {
           return res.status(409).json({
             success: false,
-            message: 'Email is already in use by another user'
+            message: "Email is already in use by another user",
           });
         }
 
@@ -472,21 +521,21 @@ export const updateUser = async (req, res) => {
     }
 
     if (name !== undefined) {
-      if (!name || typeof name !== 'string' || !name.trim()) {
+      if (!name || typeof name !== "string" || !name.trim()) {
         return res.status(400).json({
           success: false,
-          message: 'Name cannot be empty'
+          message: "Name cannot be empty",
         });
       }
       user.name = name.trim();
     }
 
     if (phone !== undefined) {
-      if (phone !== null && phone !== '') {
-        if (typeof phone !== 'string') {
+      if (phone !== null && phone !== "") {
+        if (typeof phone !== "string") {
           return res.status(400).json({
             success: false,
-            message: 'Phone must be a string'
+            message: "Phone must be a string",
           });
         }
       }
@@ -509,7 +558,7 @@ export const updateUser = async (req, res) => {
     if (!role) {
       return res.status(404).json({
         success: false,
-        message: 'Role not found'
+        message: "Role not found",
       });
     }
 
@@ -522,7 +571,7 @@ export const updateUser = async (req, res) => {
       if (normalizedStatus === null) {
         return res.status(400).json({
           success: false,
-          message: 'Status must be a boolean value (true/false)'
+          message: "Status must be a boolean value (true/false)",
         });
       }
       user.status = normalizedStatus;
@@ -533,10 +582,17 @@ export const updateUser = async (req, res) => {
       if (normalizedEmailVerified === null) {
         return res.status(400).json({
           success: false,
-          message: 'email_verified must be a boolean value (true/false)'
+          message: "email_verified must be a boolean value (true/false)",
         });
       }
       user.email_verified = normalizedEmailVerified;
+    }
+
+    if (storage_limit !== undefined) {
+      const parsedLimit = parseInt(storage_limit);
+      if (!isNaN(parsedLimit) && parsedLimit > 0) {
+        user.storage_limit = parsedLimit;
+      }
     }
 
     await user.save();
@@ -550,29 +606,38 @@ export const updateUser = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: 'User updated successfully',
-      data: userWithPlan
+      message: "User updated successfully",
+      data: userWithPlan,
     });
   } catch (error) {
-    console.error('Error updating user:', error);
+    console.error("Error updating user:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to update user',
-      error: error.message
+      message: "Failed to update user",
+      error: error.message,
     });
   }
 };
 
 export const createUser = async (req, res) => {
   try {
-    const { name, email, password, phone, country, country_code: countryCode, note, role_id } = req.body;
+    const {
+      name,
+      email,
+      password,
+      phone,
+      country,
+      country_code: countryCode,
+      note,
+      role_id,
+    } = req.body;
 
     const validation = validateUserCreationInput(req.body);
     if (!validation.isValid) {
       return res.status(400).json({
         success: false,
-        message: 'Validation failed',
-        errors: validation.errors
+        message: "Validation failed",
+        errors: validation.errors,
       });
     }
 
@@ -582,13 +647,13 @@ export const createUser = async (req, res) => {
 
     const existingUser = await User.findOne({
       email: normalizedEmail,
-      deleted_at: null
+      deleted_at: null,
     });
 
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        message: 'Email is already in use'
+        message: "Email is already in use",
       });
     }
 
@@ -601,17 +666,16 @@ export const createUser = async (req, res) => {
       if (!roleDoc) {
         return res.status(400).json({
           success: false,
-          message: 'Role not found'
+          message: "Role not found",
         });
       }
-
     } else {
-      roleDoc = await Role.findOne({ name: 'user' });
+      roleDoc = await Role.findOne({ name: "user" });
 
       if (!roleDoc) {
         return res.status(400).json({
           success: false,
-          message: 'Default role not found'
+          message: "Default role not found",
         });
       }
     }
@@ -626,7 +690,10 @@ export const createUser = async (req, res) => {
       note: note || null,
       role_id: roleDoc._id,
       email_verified: false,
-      status: true
+      status: true,
+      storage_limit:
+        (await Setting.findOne().select("storage_limit").lean())
+          ?.storage_limit || 100,
     });
 
     const userResponse = {
@@ -640,21 +707,23 @@ export const createUser = async (req, res) => {
       role_id: newUser.role_id,
       email_verified: newUser.email_verified,
       status: newUser.status,
+      storage_limit: `${newUser.storage_limit || 0} MB`,
+      storage_used: "0 MB",
       created_at: newUser.created_at,
-      updated_at: newUser.updated_at
+      updated_at: newUser.updated_at,
     };
 
     return res.status(201).json({
       success: true,
-      message: 'User created successfully',
-      data: userResponse
+      message: "User created successfully",
+      data: userResponse,
     });
   } catch (error) {
-    console.error('Error creating user:', error);
+    console.error("Error creating user:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to create user',
-      error: error.message
+      message: "Failed to create user",
+      error: error.message,
     });
   }
 };
@@ -667,7 +736,7 @@ export const deleteUsers = async (req, res) => {
     if (!validation.isValid) {
       return res.status(400).json({
         success: false,
-        message: validation.message
+        message: validation.message,
       });
     }
 
@@ -675,26 +744,26 @@ export const deleteUsers = async (req, res) => {
 
     const existingUsers = await User.find({
       _id: { $in: validIds },
-      deleted_at: null
-    }).select('_id');
+      deleted_at: null,
+    }).select("_id");
 
     if (existingUsers.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'No users found with the provided IDs'
+        message: "No users found with the provided IDs",
       });
     }
 
     const foundIds = existingUsers.map((u) => u._id.toString());
     const notFoundIds = validIds.filter(
-      (id) => !foundIds.includes(id.toString())
+      (id) => !foundIds.includes(id.toString()),
     );
 
     const now = new Date();
 
     const deleteResult = await User.updateMany(
       { _id: { $in: foundIds } },
-      { $set: { deleted_at: now, status: false } }
+      { $set: { deleted_at: now, status: false } },
     );
 
     const response = {
@@ -702,8 +771,8 @@ export const deleteUsers = async (req, res) => {
       message: `${deleteResult.modifiedCount} user(s) deleted successfully`,
       data: {
         deletedCount: deleteResult.modifiedCount,
-        deletedIds: foundIds
-      }
+        deletedIds: foundIds,
+      },
     };
 
     if (notFoundIds.length > 0) {
@@ -713,11 +782,11 @@ export const deleteUsers = async (req, res) => {
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error('Error deleting users:', error);
+    console.error("Error deleting users:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to delete users',
-      error: error.message
+      message: "Failed to delete users",
+      error: error.message,
     });
   }
 };
@@ -727,25 +796,29 @@ export const sendResetPasswordLink = async (req, res) => {
     const { id } = req.params;
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ success: false, message: 'Valid user ID is required' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Valid user ID is required" });
     }
 
     const user = await User.findOne({ _id: id, deleted_at: null });
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const resetExpires = new Date(Date.now() + 3600000); 
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetExpires = new Date(Date.now() + 3600000);
 
     user.reset_password_token = resetToken;
     user.reset_password_expires = resetExpires;
     await user.save();
 
-    const appUrl = process.env.APP_URL || 'http://localhost:3000';
-    const resetLink = `${appUrl}/reset-password?token=${resetToken}`;
+    const appUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const resetLink = `${appUrl}/auth/reset_password?token=${resetToken}`;
 
-    const emailSubject = 'Password Reset Request';
+    const emailSubject = "Password Reset Request";
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <h2>Password Reset Request</h2>
@@ -763,13 +836,22 @@ export const sendResetPasswordLink = async (req, res) => {
     const mailSent = await sendMail(user.email, emailSubject, emailHtml);
 
     if (!mailSent) {
-      return res.status(500).json({ success: false, message: 'Failed to send reset link email' });
+      return res
+        .status(500)
+        .json({ success: false, message: "Failed to send reset link email" });
     }
 
-    return res.status(200).json({ success: true, message: 'Password reset link sent to user email' });
+    return res.status(200).json({
+      success: true,
+      message: "Password reset link sent to user email",
+    });
   } catch (error) {
-    console.error('Error sending reset password link:', error);
-    return res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
+    console.error("Error sending reset password link:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
   }
 };
 
@@ -779,6 +861,5 @@ export default {
   createUser,
   updateUser,
   deleteUsers,
-  sendResetPasswordLink
+  sendResetPasswordLink,
 };
-

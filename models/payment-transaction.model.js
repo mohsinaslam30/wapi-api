@@ -8,7 +8,6 @@ const paymentTransactionSchema = new mongoose.Schema({
     index: true
   },
 
-  // Generic context — which module/feature created this payment
   context: {
     type: String,
     enum: ['appointment', 'catalog', 'custom'],
@@ -16,7 +15,6 @@ const paymentTransactionSchema = new mongoose.Schema({
     index: true
   },
 
-  // The ID of the entity in that context (booking._id, order._id, etc.)
   context_id: {
     type: mongoose.Schema.Types.ObjectId,
     required: true,
@@ -29,21 +27,19 @@ const paymentTransactionSchema = new mongoose.Schema({
     required: true
   },
 
-  // Denormalized for fast webhook lookup
   gateway: {
     type: String,
     enum: ['razorpay', 'stripe', 'paypal'],
     required: true
   },
 
-  // IDs returned by the gateway
-  gateway_order_id: { type: String, index: true },   // Razorpay order / Stripe session / PayPal order
-  gateway_payment_id: { type: String },              // Filled on successful webhook
+  gateway_order_id: { type: String, index: true },
+  gateway_payment_id: { type: String },
 
-  payment_link: { type: String },                    // URL sent to user
+  payment_link: { type: String },
   payment_type: { type: String, enum: ['full', 'partial'], default: 'full' },
 
-  amount: { type: Number, required: true },          // In smallest currency unit (paise / cents)
+  amount: { type: Number, required: true },
   currency: { type: String, default: 'INR' },
 
   status: {
@@ -55,8 +51,8 @@ const paymentTransactionSchema = new mongoose.Schema({
 
   paid_at: { type: Date },
 
-  metadata: { type: mongoose.Schema.Types.Mixed },   // Extra gateway data
-  
+  metadata: { type: mongoose.Schema.Types.Mixed },   
+
   whatsapp_phone_number_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'WhatsappPhoneNumber'

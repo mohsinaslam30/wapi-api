@@ -1,5 +1,6 @@
 import { Submission, Form } from "../models/index.js";
 import mongoose from "mongoose";
+import * as funnelService from "../services/funnel.service.js";
 
 
 const DEFAULT_PAGE = 1;
@@ -275,9 +276,63 @@ export const deleteSubmission = async (req, res) => {
     }
 };
 
+export const getSubmissionFunnels = async (req, res) => {
+    try {
+        const userId = req.user.owner_id;
+        const funnels = await funnelService.getFunnelsByType(userId, 'form_submission');
+        res.status(200).json({ success: true, data: funnels });
+    } catch (error) {
+        console.error("Error fetching submission funnels:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+export const getSubmissionKanbanStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.owner_id;
+        const status = await funnelService.getItemStatus(id, userId);
+        res.status(200).json({ success: true, data: status });
+    } catch (error) {
+        console.error("Error fetching submission kanban status:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+export const handleSubmissionKanbanAction = async (req, res) => {
+    try {
+        const userId = req.user.owner_id;
+        const { globalItemId, actions } = req.body;
+
+        let result;
+        if (actions && Array.isArray(actions)) {
+            result = await funnelService.processBulkActions({
+                globalItemId,
+                actions,
+                userId,
+                changedBy: req.user.id
+            });
+        } else {
+            result = await funnelService.processAction({
+                ...req.body,
+                userId,
+                changedBy: req.user.id
+            });
+        }
+
+        res.status(200).json({ success: true, data: result, message: "Action processed successfully" });
+    } catch (error) {
+        console.error("Error processing submission kanban action:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
 export default {
     getSubmissionsByFormId,
     getSubmissionDetails,
     updateSubmissionStatus,
-    deleteSubmission
+    deleteSubmission,
+    getSubmissionFunnels,
+    getSubmissionKanbanStatus,
+    handleSubmissionKanbanAction
 };

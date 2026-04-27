@@ -18,11 +18,11 @@ const router = express.Router();
 router.use(authenticate);
 router.use(requireSubscription);
 
-router.post('/send', checkPlanLimit('conversations'), upload.single('file_url'), checkPermission('create.unified_whatsapp'), unifiedWhatsAppController.sendMessage);
-router.get('/messages', checkPermission('view.unified_whatsapp'), unifiedWhatsAppController.getMessages);
-router.get('/chats', checkPermission('view.unified_whatsapp'), unifiedWhatsAppController.getRecentChats);
-router.post('/pin-chat', checkPermission('update.unified_whatsapp'), unifiedWhatsAppController.togglePinChat);
-router.post('/assign-chat', checkPermission('create.agents'), unifiedWhatsAppController.assignChatToAgent);
+router.post('/send', checkPlanLimit('conversations'), upload.fields([{ name: 'file_url', maxCount: 1 }, { name: 'carousel_files' }]), checkPermission('manage.conversations'), unifiedWhatsAppController.sendMessage);
+router.get('/messages', checkPermission('manage.conversations'), unifiedWhatsAppController.getMessages);
+router.get('/chats', checkPermission('manage.conversations'), unifiedWhatsAppController.getRecentChats);
+router.post('/pin-chat', checkPermission('manage.conversations'), unifiedWhatsAppController.togglePinChat);
+router.post('/assign-chat', checkPermission('manage.conversations'), unifiedWhatsAppController.assignChatToAgent);
 router.get('/status', checkPermission('view.unified_whatsapp'), unifiedWhatsAppController.getConnectionStatus);
 router.post('/connect', checkPermission('create.unified_whatsapp'), unifiedWhatsAppController.connectWhatsApp);
 router.get('/baileys/qrcode/:wabaId', checkPermission('view.unified_whatsapp'), unifiedWhatsAppController.getBaileysQRCode);

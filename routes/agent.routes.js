@@ -17,4 +17,8 @@ router.delete('/delete', checkPermission('delete.agents'), agentController.delet
 router.get('/:id', checkPermission('view.agents'), agentController.getAgentById);
 router.put('/:id/phone-no', checkPermission('update.agents'), agentController.updatePhonenoStatus);
 
+router.get('/funnels', checkPermission('view.kanban_funnel'), agentController.getAgentFunnels);
+router.get('/:id/funnel-status', checkPermission('view.agents'), agentController.getAgentKanbanStatus);
+router.post('/funnel/action', checkPermission('update.agents'), agentController.handleAgentKanbanAction);
+
 export default router;

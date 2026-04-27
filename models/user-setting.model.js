@@ -75,7 +75,7 @@ const userSettingSchema = new mongoose.Schema({
   },
   payment_reminder_delay: {
     type: Number,
-    default: 60 // minutes
+    default: 60 
   },
   payment_reminder_unit: {
     type: String,

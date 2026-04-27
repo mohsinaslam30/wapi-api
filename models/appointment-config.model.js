@@ -64,43 +64,35 @@ const appointmentConfigSchema = new mongoose.Schema({
     }
   },
 
-  // Financial Configuration
   appointment_fees: { type: Number, default: 0 },
   pre_paid_fees: { type: Number, default: 0 },
   tax_percentage: { type: Number, default: 0 },
   total_appointment_fees: { type: Number, default: 0 },
   currency: { type: String, default: 'INR' },
 
-  // Payment Gateway
   payment_gateway_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentGatewayConfig' },
   accept_partial_payment: { type: Boolean, default: false },
-  partial_payment_amount: { type: Number, default: 0 }, // 0 = use pre_paid_fees
+  partial_payment_amount: { type: Number, default: 0 }, 
 
-  // Auto payment link delivery
   send_payment_link_automatically: { type: Boolean, default: false },
   payment_link_template_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Template' },
   payment_link_variable_mappings: { type: mongoose.Schema.Types.Mixed, default: {} },
 
-  // Integrations
   create_google_meet: { type: Boolean, default: false },
   google_account_id: { type: mongoose.Schema.Types.ObjectId, ref: 'GoogleAccount' },
   calendar_id: { type: String, default: 'primary' },
   sheet_id: { type: String },
   sheet_name: { type: String, default: 'Appointments' },
 
-  // WhatsApp Flow Config
   whatsapp_flow_id: { type: String },
 
-  // Availability
   slots: [slotSchema],
 
-  // Conversational Questionnaire
   intro_message: { type: String },
   series_of_questions: [customQuestionSchema],
 
-  // Custom Fields Mapping
   custom_fields_mapping: [{
-    appointment_field: { type: String }, // e.g. "name", "reason"
+    appointment_field: { type: String },
     contact_custom_field_key: { type: String }
   }],
 

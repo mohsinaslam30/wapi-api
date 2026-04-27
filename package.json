@@ -9,6 +9,8 @@
     "seed": "node seeder/index.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1032.0",
+    "@aws-sdk/lib-storage": "^3.1032.0",
     "@roamhq/wrtc": "^0.10.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.13.6",

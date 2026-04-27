@@ -37,7 +37,7 @@ export const startImpersonation = async (req, res) => {
       device_info: req.headers['user-agent'] || 'unknown',
       ip_address: req.ip,
       agenda: `impersonation_by_${impersonator.id}`,
-      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 
       status: 'active',
     });
 
@@ -65,10 +65,10 @@ export const stopImpersonation = async (req, res) => {
       return res.status(401).json({ success: false, message: 'No token provided' });
     }
 
-    const session = await Session.findOne({ 
-      session_token: token, 
-      agenda: { $regex: /^impersonation_by_/ }, 
-      status: 'active' 
+    const session = await Session.findOne({
+      session_token: token,
+      agenda: { $regex: /^impersonation_by_/ },
+      status: 'active'
     });
 
     if (!session) {

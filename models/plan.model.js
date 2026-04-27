@@ -92,10 +92,6 @@ const planSchema = new mongoose.Schema({
             type: Number,
             default: 0
         },
-        canned_replies: {
-            type: Number,
-            default: 0
-        },
         staff: {
             type: Number,
             default: 1
@@ -115,10 +111,6 @@ const planSchema = new mongoose.Schema({
         whatsapp_webhook: {
             type: Boolean,
             default: true
-        },
-        broadcast_messages: {
-            type: Number,
-            default: 0
         },
         auto_replies: {
             type: Boolean,
@@ -149,6 +141,22 @@ const planSchema = new mongoose.Schema({
             default: 0
         },
         whatsapp_calling: {
+            type: Number,
+            default: 0
+        },
+        appointment_bookings: {
+            type: Number,
+            default: 0
+        },
+        facebookAds_campaign: {
+            type: Number,
+            default: 0
+        },
+        kanban_funnels: {
+            type: Number,
+            default: 0
+        },
+        segments: {
             type: Number,
             default: 0
         }

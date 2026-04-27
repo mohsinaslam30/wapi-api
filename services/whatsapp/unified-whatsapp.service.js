@@ -120,7 +120,6 @@ class UnifiedWhatsAppService {
         if (connectionId) {
           connection = await WhatsappWaba.findOne({
             _id: connectionId,
-            user_id: userId,
             provider: providerType,
             deleted_at: null
           });
@@ -248,54 +247,63 @@ class UnifiedWhatsAppService {
           });
         }
 
-        const template = messageParams.templateObj;
-        if (template && Array.isArray(template.buttons)) {
-          template.buttons.forEach((btn, btnIndex) => {
-            if (btn.type === 'copy_code') {
-              const c_code = messageParams.couponCode || (templateVariables ? (templateVariables.coupon_code || templateVariables['1']) : null);
-              if (c_code) {
-                templateComponents.push({
-                  type: 'button',
-                  sub_type: 'copy_code',
-                  index: btnIndex.toString(),
-                  parameters: [
-                    {
-                      type: 'coupon_code',
-                      coupon_code: String(c_code)
-                    }
-                  ]
-                });
-              }
-            } else if (btn.type === 'url') {
-              const isDynamicUrl = typeof btn.url === 'string' && btn.url.includes('{{');
-              if (isDynamicUrl) {
-                const urlValue = templateVariables?.url || templateVariables?.['1'] || Object.values(templateVariables || {}).find(v => typeof v === 'string' && /^https?:\/\//.test(v));
-                if (urlValue) {
+        const template = messageParams.templateObj
+          || await Template.findOne({ template_name: templateName, user_id: userId, deleted_at: null }).lean()
+          || await Template.findOne({ template_name: templateName, deleted_at: null }).lean();
+
+        if (template) {
+          if (!messageParams.templateId) {
+            messageParams.templateId = template._id;
+          }
+
+          if (Array.isArray(template.buttons)) {
+            template.buttons.forEach((btn, btnIndex) => {
+              if (btn.type === 'copy_code') {
+                const c_code = messageParams.couponCode || (templateVariables ? (templateVariables.coupon_code || templateVariables['1']) : null);
+                if (c_code) {
                   templateComponents.push({
                     type: 'button',
-                    sub_type: 'url',
+                    sub_type: 'copy_code',
                     index: btnIndex.toString(),
-                    parameters: [{ type: 'text', text: String(urlValue) }]
+                    parameters: [
+                      {
+                        type: 'coupon_code',
+                        coupon_code: String(c_code)
+                      }
+                    ]
+                  });
+                }
+              } else if (btn.type === 'url') {
+                const isDynamicUrl = typeof btn.url === 'string' && btn.url.includes('{{');
+                if (isDynamicUrl) {
+                  const urlValue = templateVariables?.url || templateVariables?.['1'] || Object.values(templateVariables || {}).find(v => typeof v === 'string' && /^https?:\/\//.test(v));
+                  if (urlValue) {
+                    templateComponents.push({
+                      type: 'button',
+                      sub_type: 'url',
+                      index: btnIndex.toString(),
+                      parameters: [{ type: 'text', text: String(urlValue) }]
+                    });
+                  }
+                }
+              } else if (btn.type === 'catalog') {
+                const p_id = messageParams.productRetailerId || templateVariables?.product_retailer_id || templateVariables?.['1'];
+                if (p_id) {
+                  templateComponents.push({
+                    type: 'button',
+                    sub_type: 'CATALOG',
+                    index: btnIndex.toString(),
+                    parameters: [{
+                      type: 'action',
+                      action: {
+                        thumbnail_product_retailer_id: String(p_id)
+                      }
+                    }]
                   });
                 }
               }
-            } else if (btn.type === 'catalog') {
-              const p_id = messageParams.productRetailerId || templateVariables?.product_retailer_id || templateVariables?.['1'];
-              if (p_id) {
-                templateComponents.push({
-                  type: 'button',
-                  sub_type: 'CATALOG',
-                  index: btnIndex.toString(),
-                  parameters: [{
-                    type: 'action',
-                    action: {
-                      thumbnail_product_retailer_id: String(p_id)
-                    }
-                  }]
-                });
-              }
-            }
-          });
+            });
+          }
         }
 
         if (template?.is_limited_time_offer === true) {
@@ -347,8 +355,10 @@ class UnifiedWhatsAppService {
                 const cardComponents = [];
                 if (card.header && card.header.type) {
                   const mediaType = card.header.type.toLowerCase();
-                  const param = { type: mediaType };
-                  param[mediaType] = card.header.id ? { id: card.header.id } : { link: card.header.link };
+                  const param = { type: mediaType, _uploadedFile: card.header._uploadedFile || null };
+                  if (!card.header._uploadedFile) {
+                    param[mediaType] = card.header.id ? { id: card.header.id } : { link: card.header.link };
+                  }
                   cardComponents.push({
                     type: 'header',
                     parameters: [param]
@@ -384,6 +394,16 @@ class UnifiedWhatsAppService {
           }
         }
       }
+
+
+      if (!messageParams.templateId && templateName) {
+        const templateForId = messageParams.templateObj
+          || await Template.findOne({ template_name: templateName, user_id: userId, deleted_at: null }).lean()
+          || await Template.findOne({ template_name: templateName, deleted_at: null }).lean();
+        if (templateForId) {
+          messageParams.templateId = templateForId._id;
+        }
+      }
     }
 
     messageParams.recipientNumber = recipientNumber;
@@ -395,7 +415,9 @@ class UnifiedWhatsAppService {
     messageParams.replyMessageId = replyMessageId;
     messageParams.reactionMessageId = reactionMessageId;
     messageParams.reactionEmoji = reactionEmoji;
-    messageParams.templateId = templateId;
+    if (!messageParams.templateId && templateId) {
+      messageParams.templateId = templateId;
+    }
 
     if (recipientNumber) {
       await Contact.updateOne(
@@ -415,6 +437,15 @@ class UnifiedWhatsAppService {
           registred_phone_number: whatsappPhoneNumber.display_phone_number
         }
         : waba;
+
+      console.log('[UnifiedService] Calling provider sendMessage with:', {
+        providerType,
+        hasFile: !!messageParams.file,
+        fileType: messageParams.file?.mimetype || messageParams.file?.type,
+        hasBuffer: !!messageParams.file?.buffer,
+        hasUrl: !!messageParams.file?.url,
+        messageType: messageParams.messageType
+      });
 
       return await this.providers[providerType].sendMessage(userId, messageParams, connection);
     }

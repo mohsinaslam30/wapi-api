@@ -701,19 +701,16 @@ export const assignChatToAgent = async (req, res) => {
         { sender_number: businessPhoneNumber, receiver_number: contactPhoneNumber }
       ]
     };
-    const statusMatch = { $or: [{ status: 'assigned' }, { status: { $exists: false } }] };
-
     const existingAssignment = await ChatAssignment.findOne({
       whatsapp_phone_number_id,
-      ...chatMatch,
-      ...statusMatch
+      ...chatMatch
     });
 
     let assignment;
 
     if (existingAssignment) {
       existingAssignment.agent_id = agent_id;
-      existingAssignment.assigned_by = req.user.id; 
+      existingAssignment.assigned_by = req.user.id;
       existingAssignment.status = 'assigned';
       existingAssignment.updated_at = new Date();
 
@@ -746,7 +743,7 @@ export const assignChatToAgent = async (req, res) => {
     console.error('Error assigning chat:', error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to assign chat',
+      message: error.message,
       error: error.message
     });
   }
@@ -894,10 +891,12 @@ export const updateChatStatus = async (req, res) => {
 
     const myPhoneNumber = phoneNumber.display_phone_number;
 
+    const agentName = req.user.name || 'Admin';
+
     await Message.create({
       contact_id: contact._id,
-      user_id: userId,
-      content: `Chat marked as ${status}`,
+      user_id: req.user.id,
+      content: `Chat marked as ${status} by ${agentName}`,
       message_type: 'system_messages',
       direction: 'outbound',
       from_me: true,

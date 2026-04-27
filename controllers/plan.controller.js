@@ -107,7 +107,8 @@ const validatePlanData = (data) => {
             'contacts', 'template_bots', 'message_bots', 'campaigns',
             'ai_prompts', 'staff', 'conversations',
             'bot_flow', 'broadcast_messages', 'custom_fields', 'tags',
-            'forms', 'whatsapp_calling'
+            'forms', 'whatsapp_calling', 'teams', 'appointment_bookings',
+            'facebookAds_campaign', 'kanban_funnels', 'segments'
         ];
 
         numericFeatures.forEach(feature => {
@@ -780,6 +781,107 @@ export const getFeaturedPlans = async (req, res) => {
     }
 };
 
+export const syncPlansToGateways = async (req, res) => {
+    try {
+        const plans = await Plan.find({ deleted_at: null, is_active: true }).populate(['currency', 'taxes']);
+        const setting = await Setting.findOne().lean();
+
+        const results = {
+            processed: 0,
+            stripe: { synced: 0, failed: 0 },
+            razorpay: { synced: 0, failed: 0 },
+            paypal: { synced: 0, failed: 0 }
+        };
+
+        const calculateTotalPrice = (plan) => {
+            let total = plan.price;
+            if (plan.taxes && plan.taxes.length > 0) {
+                const totalTaxRate = plan.taxes.reduce((sum, tax) => sum + (tax.rate || 0), 0);
+                total = total * (1 + totalTaxRate / 100);
+            }
+            return total;
+        };
+
+        for (const plan of plans) {
+            results.processed++;
+            const planWithTotal = {
+                ...plan.toObject(),
+                price: calculateTotalPrice(plan)
+            };
+
+            if (setting?.is_stripe_active && (!plan.stripe_product_id || !plan.stripe_price_id)) {
+                try {
+                    const stripeResult = await StripeService.createProductPriceAndPaymentLink(planWithTotal);
+                    if (stripeResult) {
+                        plan.stripe_product_id = stripeResult.productId;
+                        plan.stripe_price_id = stripeResult.priceId;
+                        plan.stripe_payment_link_id = stripeResult.paymentLinkId;
+                        plan.stripe_payment_link_url = stripeResult.paymentLinkUrl;
+                        results.stripe.synced++;
+                    } else {
+                        results.stripe.failed++;
+                    }
+                } catch (err) {
+                    console.error(`Stripe sync failed for plan ${plan.name}:`, err.message);
+                    results.stripe.failed++;
+                }
+            }
+
+            if (setting?.is_razorpay_active && !plan.razorpay_plan_id) {
+                try {
+                    const razorpayPlan = await RazorpayService.createPlan(planWithTotal);
+                    if (razorpayPlan && razorpayPlan.id) {
+                        plan.razorpay_plan_id = razorpayPlan.id;
+                        results.razorpay.synced++;
+                    } else {
+                        results.razorpay.failed++;
+                    }
+                } catch (err) {
+                    console.error(`Razorpay sync failed for plan ${plan.name}:`, err.message);
+                    results.razorpay.failed++;
+                }
+            }
+
+            if (setting?.is_paypal_active && !plan.paypal_plan_id) {
+                try {
+                    const paypalProduct = await PayPalService.createProduct(planWithTotal);
+                    if (paypalProduct && paypalProduct.id) {
+                        const paypalPlan = await PayPalService.createPlan(planWithTotal, paypalProduct.id);
+                        if (paypalPlan && paypalPlan.id) {
+                            plan.paypal_plan_id = paypalPlan.id;
+                            results.paypal.synced++;
+                        } else {
+                            results.paypal.failed++;
+                        }
+                    } else {
+                        results.paypal.failed++;
+                    }
+                } catch (err) {
+                    console.error(`PayPal sync failed for plan ${plan.name}:`, err.message);
+                    results.paypal.failed++;
+                }
+            }
+
+            if (plan.isModified()) {
+                await plan.save();
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: 'Plan synchronization complete',
+            data: results
+        });
+    } catch (error) {
+        console.error('Error syncing plans to gateways:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to synchronize plans',
+            error: error.message
+        });
+    }
+};
+
 export default {
     getAllPlans,
     getPlanById,
@@ -788,5 +890,6 @@ export default {
     updatePlanStatus,
     deletePlan,
     getActivePlans,
-    getFeaturedPlans
+    getFeaturedPlans,
+    syncPlansToGateways
 };

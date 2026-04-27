@@ -235,16 +235,42 @@ export const sendAutomatedReply = async (params) => {
 
 const assignToAgentInternal = async ({ contactId, agentId, whatsappPhoneNumberId, adminId }) => {
     try {
-        const existingAssignment = await ChatAssignment.findOne({ contact_id: contactId });
+        const contact = await Contact.findById(contactId);
+        const phoneNumber = await WhatsappPhoneNumber.findById(whatsappPhoneNumberId);
+
+        if (!contact || !phoneNumber) {
+            console.error('Contact or WhatsApp phone number not found in assignToAgentInternal');
+            return;
+        }
+
+        const contactPhoneNumber = contact.phone_number;
+        const businessPhoneNumber = phoneNumber.display_phone_number;
+
+        const chatMatch = {
+            $or: [
+                { sender_number: contactPhoneNumber, receiver_number: businessPhoneNumber },
+                { sender_number: businessPhoneNumber, receiver_number: contactPhoneNumber }
+            ]
+        };
+
+        const existingAssignment = await ChatAssignment.findOne({
+            whatsapp_phone_number_id: whatsappPhoneNumberId,
+            ...chatMatch
+        });
+
         if (existingAssignment) {
             existingAssignment.agent_id = agentId;
             existingAssignment.status = 'assigned';
+            existingAssignment.assigned_by = adminId;
+            existingAssignment.updated_at = new Date();
             await existingAssignment.save();
         } else {
             await ChatAssignment.create({
-                contact_id: contactId,
+                sender_number: contactPhoneNumber,
+                receiver_number: businessPhoneNumber,
                 whatsapp_phone_number_id: whatsappPhoneNumberId,
                 agent_id: agentId,
+                assigned_by: adminId,
                 status: 'assigned'
             });
         }

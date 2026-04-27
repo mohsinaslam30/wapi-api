@@ -195,7 +195,13 @@ export const getCustomFields = async (req, res) => {
     }
 
     if (search) {
-      query.label = { $regex: search, $options: 'i' };
+      const searchRegex = { $regex: search, $options: 'i' };
+      query.$or = [
+        { label: searchRegex },
+        { name: searchRegex },
+        { type: searchRegex },
+        { options: searchRegex }
+      ];
     }
 
     const allowedSortColumns = [

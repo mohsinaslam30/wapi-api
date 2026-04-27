@@ -52,6 +52,14 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  is_verified: {
+    type: Boolean,
+    default: false
+  },
+  phone_verified: {
+    type: Boolean,
+    default: false
+  },
   created_by: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -99,6 +107,14 @@ const userSchema = new mongoose.Schema({
   reset_password_expires: {
     type: Date,
     default: null
+  },
+  storage_limit: {
+    type: Number,
+    default: 100
+  },
+  storage_used: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

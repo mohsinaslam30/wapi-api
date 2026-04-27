@@ -31,7 +31,6 @@ class PaymentLinkService {
       throw new Error('amount must be a positive number');
     }
 
-    // 1. Resolve gateway config
     const gatewayQuery = {
       user_id,
       is_active: true,
@@ -44,11 +43,9 @@ class PaymentLinkService {
       throw new Error('No active payment gateway found. Please configure a payment gateway first.');
     }
 
-    // 2. Resolve contact
     const contact = await Contact.findById(contact_id).lean();
     if (!contact) throw new Error('Contact not found');
 
-    // 3. Create payment link via gateway
     const baseUrl = process.env.APP_URL || 'https://yourdomain.com';
     const linkResult = await paymentGatewayService.createPaymentLink(gatewayConfig, {
       amount,
@@ -60,7 +57,6 @@ class PaymentLinkService {
       cancelUrl: `${baseUrl}/payment/cancel?ref=${context_id}`
     });
 
-    // 4. Resolve phone number ID (for transaction persistence)
     let finalPhId = whatsapp_phone_number_id;
     if (!finalPhId) {
       const { WhatsappPhoneNumber } = await import('../models/index.js');
@@ -68,7 +64,6 @@ class PaymentLinkService {
       finalPhId = phone?._id;
     }
 
-    // 5. Create PaymentTransaction record
     const transaction = await PaymentTransaction.create({
       user_id,
       context,
@@ -85,7 +80,6 @@ class PaymentLinkService {
       whatsapp_phone_number_id: finalPhId
     });
 
-    // 6. Send WhatsApp message with the payment link
     await this._sendWhatsAppPaymentMessage({
       userId: user_id,
       contact,
@@ -98,13 +92,12 @@ class PaymentLinkService {
       transaction
     });
 
-    // 7. Schedule Reminder if enabled
     try {
       const settings = await UserSetting.findOne({ user_id }).lean();
       if (settings?.payment_reminder_enabled && settings?.payment_reminder_delay > 0) {
         const reminderQueue = getPaymentReminderQueue();
 
-        let delayMs = settings.payment_reminder_delay * 60000; // default minutes
+        let delayMs = settings.payment_reminder_delay * 60000;
         if (settings.payment_reminder_unit === 'hours') delayMs *= 60;
         if (settings.payment_reminder_unit === 'days') delayMs *= 60 * 24;
 
@@ -119,7 +112,6 @@ class PaymentLinkService {
       console.error('[PaymentLinkService] Failed to schedule reminder:', err.message);
     }
 
-    // 8. Return the transaction (caller updates context entity, e.g. booking.payment_link)
     return { transaction, payment_link: linkResult.payment_link };
   }
 
@@ -136,7 +128,6 @@ class PaymentLinkService {
       }
 
       if (templateConfig && templateConfig.templateId) {
-        // Template message
         await this._sendTemplatePaymentMessage({
           userId,
           contact,
@@ -148,7 +139,6 @@ class PaymentLinkService {
           unifiedWhatsAppService
         });
       } else {
-        // Plain text fallback
         const amountDisplay = (amount / 100).toFixed(2);
         const messageText =
           `💳 *Payment Required*\n\n` +
@@ -167,7 +157,6 @@ class PaymentLinkService {
       }
     } catch (err) {
       console.error('[PaymentLinkService] Failed to send WhatsApp message:', err.message);
-      // Non-blocking — transaction was already created
     }
   }
 
@@ -197,7 +186,6 @@ class PaymentLinkService {
         variables[key] = value;
       }
 
-      // Fallback variables if none defined
       if (Object.keys(variables).length === 0) {
         variables['1'] = contact.name || 'Guest';
         variables['2'] = `${currency} ${amountDisplay}`;
@@ -232,19 +220,16 @@ class PaymentLinkService {
       return null;
     }
 
-    // IDEMPOTENCY: If transaction is already paid, don't re-process notifications/status
     if (transaction.status === 'paid' && status === 'paid') {
       console.log(`[PaymentLinkService] Transaction ${transaction._id} already marked as paid. Skipping duplicate processing.`);
       return transaction;
     }
 
-    // Update transaction
     transaction.status = status;
     transaction.gateway_payment_id = gateway_payment_id;
     if (status === 'paid') transaction.paid_at = new Date();
     await transaction.save();
 
-    // Dispatch to correct context handler
     if (transaction.context === 'appointment') {
       await this._handleAppointmentPayment(transaction, amount_paid, status);
     } else if (transaction.context === 'catalog') {
@@ -270,13 +255,10 @@ class PaymentLinkService {
         booking.payment_status = 'paid';
         booking.amount_paid = amount_paid || transaction.amount;
 
-        // Auto-confirm booking on payment
         booking.status = 'confirmed';
 
-        // Send Payment Success Notification
         await this._sendPaymentSuccessWhatsApp(booking, contact, transaction);
 
-        // Send Appointment Confirmation Notification (if template configured)
         if (config && config.success_template_id) {
           const { default: appointmentService } = await import('./appointment.service.js');
           await appointmentService.sendAppointmentTemplate(
@@ -348,7 +330,7 @@ class PaymentLinkService {
     }
   }
 
- 
+
   async _handleCustomPayment(transaction, amount_paid, status) {
     try {
       if (!['paid', 'failed'].includes(status)) return;
@@ -374,7 +356,6 @@ class PaymentLinkService {
           '❌ *Payment Failed*\n\nWe were unable to process your payment of *{currency} {amount}* for *{description}*. Please try again.';
       }
 
-      // Variable replacement
       const amountDisplay = (transaction.amount / 100).toFixed(2);
       const currency = transaction.currency || 'INR';
       const description = transaction.metadata.description || 'Service';

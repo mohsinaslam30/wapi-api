@@ -1,4 +1,4 @@
-import { WhatsappPhoneNumber, Message, EcommerceOrder, User, AppointmentBooking, AppointmentConfig, Contact } from '../models/index.js';
+import { WhatsappPhoneNumber, Message, EcommerceOrder, User, AppointmentBooking, AppointmentConfig, Contact, FacebookAdCampaign, AutomationFlow } from '../models/index.js';
 import {
   isWithinWorkingHours,
   findMatchingBot,
@@ -74,14 +74,18 @@ export const handleIncomingMessage = async (req, res, io = null) => {
     let storedPath = null;
 
     if (mediaId) {
-      mediaUrl = await getWhatsAppMediaUrl(mediaId, access_token);
-
-      storedPath = await downloadAndStoreMedia(
-        mediaUrl,
-        access_token,
-        mimeType,
-        fileType
-      );
+      try {
+        mediaUrl = await getWhatsAppMediaUrl(mediaId, access_token);
+        storedPath = await downloadAndStoreMedia(
+          mediaUrl,
+          access_token,
+          mimeType,
+          fileType,
+          whatsappPhoneNumber.user_id
+        );
+      } catch (mediaErr) {
+        console.error(`[Webhook] Failed to download media (id=${mediaId}):`, mediaErr.message);
+      }
     }
 
     const contact = await import('../models/index.js');
@@ -105,6 +109,8 @@ export const handleIncomingMessage = async (req, res, io = null) => {
 
     contactDoc = await Contact.findById(contactDoc._id);
 
+    let automatedHandled = false;
+
     const messageDoc = await Message.create({
       sender_number: message.from,
       recipient_number: whatsappPhoneNumber.display_phone_number,
@@ -125,6 +131,54 @@ export const handleIncomingMessage = async (req, res, io = null) => {
       reply_message_id: replyMessageId,
       reaction_message_id: reactionMessageId
     });
+
+  
+    if (message.referral && message.referral.source_id && message.referral.source_type === 'ad') {
+      try {
+        const adId = message.referral.source_id;
+        console.log(`[Webhook] Ad Referral detected: source_id=${adId}`);
+
+        const campaign = await FacebookAdCampaign.findOne({ fb_ad_id: adId }).lean();
+
+        if (campaign && campaign.automation_trigger && campaign.automation_trigger.type_name !== 'none') {
+          const trigger = campaign.automation_trigger;
+          console.log(`[Webhook] Found linked automation: ${trigger.type_name} (${trigger.id})`);
+
+          if (trigger.type_name === 'reply_material') {
+            await sendAutomatedReply({
+              wabaId: whatsappPhoneNumber.waba_id._id || whatsappPhoneNumber.waba_id,
+              contactId: contactDoc._id,
+              replyType: 'reply_material',
+              replyId: trigger.id,
+              senderNumber: message.from,
+              incomingText: content,
+              userId: whatsappPhoneNumber.user_id,
+              whatsappPhoneNumberId: whatsappPhoneNumber._id
+            });
+            automatedHandled = true;
+          } else if (trigger.type_name === 'workflow') {
+            const flow = await AutomationFlow.findById(trigger.id).lean();
+            if (flow && flow.is_active) {
+              await automationEngine.executeFlow(flow, {
+                message: content,
+                senderNumber: message.from,
+                recipientNumber: whatsappPhoneNumber.display_phone_number,
+                messageType: message.type,
+                userId: whatsappPhoneNumber.user_id.toString(),
+                whatsappPhoneNumberId: whatsappPhoneNumber._id.toString(),
+                waMessageId: message.id,
+                contactId: contactDoc._id.toString(),
+                timestamp: new Date(Number(message.timestamp) * 1000),
+                event_type: 'ad_click'
+              });
+              automatedHandled = true;
+            }
+          }
+        }
+      } catch (attrError) {
+        console.error('[Webhook] Error handling ad referral attribution:', attrError);
+      }
+    }
 
     if (io) {
       const populatedMessage = await Message.findById(messageDoc._id)
@@ -244,11 +298,11 @@ export const handleIncomingMessage = async (req, res, io = null) => {
           const { default: appointmentService } = await import('../services/appointment.service.js');
           console.log(`[PIVOTAL] Resuming Questionnaire. Handing off to startConversationalFlow.`);
           await appointmentService.startConversationalFlow({
-             userId: whatsappPhoneNumber.user_id,
-             contactId: contactDoc._id,
-             configId: metadata.automation_waiting_config_id,
-             whatsappPhoneNumberId: whatsappPhoneNumber._id,
-             inputData: inputData
+            userId: whatsappPhoneNumber.user_id,
+            contactId: contactDoc._id,
+            configId: metadata.automation_waiting_config_id,
+            whatsappPhoneNumberId: whatsappPhoneNumber._id,
+            inputData: inputData
           });
           return res.sendStatus(200);
         }
@@ -285,31 +339,31 @@ export const handleIncomingMessage = async (req, res, io = null) => {
             contactDoc.markModified('metadata');
             await contactDoc.save();
           } else {
-             const booking = await appointmentService.createBooking({
-               configId,
-               contactId: contactDoc._id,
-               userId: whatsappPhoneNumber.user_id,
-               startTime,
-               endTime: endTime.toISOString(),
-               answers: inputData.appointment_answers || {},
-               whatsappPhoneNumberId: whatsappPhoneNumber._id
-             });
+            const booking = await appointmentService.createBooking({
+              configId,
+              contactId: contactDoc._id,
+              userId: whatsappPhoneNumber.user_id,
+              startTime,
+              endTime: endTime.toISOString(),
+              answers: inputData.appointment_answers || {},
+              whatsappPhoneNumberId: whatsappPhoneNumber._id
+            });
 
-             console.log(`[PIVOTAL] Booking Created: ${booking._id}. Sending status options...`);
+            console.log(`[PIVOTAL] Booking Created: ${booking._id}. Sending status options...`);
 
-             if (config.send_confirmation_message !== false) {
-                 await appointmentService.sendBookingStatusOptions(
-                   whatsappPhoneNumber.user_id,
-                   contactDoc._id,
-                   booking._id,
-                   whatsappPhoneNumber._id
-                 );
-             } else {
-                 console.log(`[PIVOTAL] Skip confirmation buttons (config limit). Ending flow.`);
-                 contactDoc.metadata.automation_waiting_type = null;
-                 contactDoc.markModified('metadata');
-                 await contactDoc.save();
-             }
+            if (config.send_confirmation_message !== false) {
+              await appointmentService.sendBookingStatusOptions(
+                whatsappPhoneNumber.user_id,
+                contactDoc._id,
+                booking._id,
+                whatsappPhoneNumber._id
+              );
+            } else {
+              console.log(`[PIVOTAL] Skip confirmation buttons (config limit). Ending flow.`);
+              contactDoc.metadata.automation_waiting_type = null;
+              contactDoc.markModified('metadata');
+              await contactDoc.save();
+            }
           }
           return res.sendStatus(200);
         }
@@ -326,17 +380,17 @@ export const handleIncomingMessage = async (req, res, io = null) => {
 
           if (buttonId === 'status_confirm') {
             if (!bookingId) {
-               console.error(`[PIVOTAL] Error: status_confirm clicked but bookingId is null in metadata.`);
-               return res.sendStatus(200);
+              console.error(`[PIVOTAL] Error: status_confirm clicked but bookingId is null in metadata.`);
+              return res.sendStatus(200);
             }
             const booking = await AppointmentBooking.findByIdAndUpdate(bookingId, { status: 'confirmed' }, { returnDocument: 'after' });
             if (!booking) {
-               console.error(`[PIVOTAL] Error: Booking document ${bookingId} not found during confirmation.`);
-               return res.sendStatus(200);
+              console.error(`[PIVOTAL] Error: Booking document ${bookingId} not found during confirmation.`);
+              return res.sendStatus(200);
             }
             const config = await AppointmentConfig.findById(booking.config_id).lean();
             if (config?.confirm_template_id) {
-               await appointmentService.sendAppointmentTemplate(whatsappPhoneNumber.user_id, contactDoc._id, config.confirm_template_id, booking, 'confirm', whatsappPhoneNumber._id);
+              await appointmentService.sendAppointmentTemplate(whatsappPhoneNumber.user_id, contactDoc._id, config.confirm_template_id, booking, 'confirm', whatsappPhoneNumber._id);
             }
             contactDoc.metadata.automation_waiting_type = null;
           }
@@ -348,8 +402,8 @@ export const handleIncomingMessage = async (req, res, io = null) => {
           }
           else if (buttonId === 'status_reschedule') {
             if (!bookingId) {
-               console.error(`[PIVOTAL] Error: status_reschedule clicked but bookingId is null.`);
-               return res.sendStatus(200);
+              console.error(`[PIVOTAL] Error: status_reschedule clicked but bookingId is null.`);
+              return res.sendStatus(200);
             }
             const inputData = JSON.parse(metadata.automation_input_data || "{}");
             contactDoc.metadata.automation_reschedule_booking_id = bookingId;
@@ -367,8 +421,6 @@ export const handleIncomingMessage = async (req, res, io = null) => {
         }
       }
     }
-
-    let automatedHandled = false;
 
     if (message.type === 'interactive' && message.interactive?.type === 'nfm_reply') {
       try {
@@ -502,8 +554,8 @@ export const handleIncomingMessage = async (req, res, io = null) => {
           });
           automatedHandled = true;
         } else {
-           console.log(`[Webhook] Chatbot assignment expired for ${message.from}`);
-           await db.ChatAssignment.findByIdAndUpdate(chatAssignment._id, { chatbot_id: null, chatbot_expires_at: null });
+          console.log(`[Webhook] Chatbot assignment expired for ${message.from}`);
+          await db.ChatAssignment.findByIdAndUpdate(chatAssignment._id, { chatbot_id: null, chatbot_expires_at: null });
         }
       }
 

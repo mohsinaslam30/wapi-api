@@ -1,7 +1,19 @@
 
 
-import { PaymentGatewayConfig } from '../models/index.js';
+import { PaymentGatewayConfig, PaymentTransaction } from '../models/index.js';
 import paymentGatewayService from '../services/payment-gateway.service.js';
+
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 100;
+
+const parsePaginationParams = (query) => {
+  const page = Math.max(1, parseInt(query.page) || DEFAULT_PAGE);
+  const limit = Math.max(1, Math.min(MAX_LIMIT, parseInt(query.limit) || DEFAULT_LIMIT));
+  const skip = (page - 1) * limit;
+
+  return { page, limit, skip };
+};
 
 const getWebhookBaseUrl = () => process.env.APP_URL || 'https://yourdomain.com';
 
@@ -187,6 +199,58 @@ export const reregisterWebhook = async (req, res) => {
 };
 
 
+export const getTransactions = async (req, res) => {
+  try {
+    const userId = req.user.owner_id;
+    const { page, limit, skip } = parsePaginationParams(req.query);
+    const { status, gateway, search } = req.query;
+
+    const matchFilter = { user_id: userId };
+
+    if (status) {
+      matchFilter.status = status;
+    }
+
+    if (gateway) {
+      matchFilter.gateway = gateway;
+    }
+
+    if (search) {
+      matchFilter.$or = [
+        { transaction_id: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const [totalCount, transactions] = await Promise.all([
+      PaymentTransaction.countDocuments(matchFilter),
+      PaymentTransaction.find(matchFilter)
+        .select('-metadata')
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate({ path: 'gateway_config_id', select: 'display_name gateway' })
+        .lean()
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        transactions,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalCount / limit),
+          totalItems: totalCount,
+          itemsPerPage: limit
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
 function _sanitizeConfig(config) {
   if (config.credentials) {
     const safe = { ...config.credentials };
@@ -205,5 +269,6 @@ export default {
   updateGateway,
   deleteGateway,
   testGateway,
-  reregisterWebhook
+  reregisterWebhook,
+  getTransactions
 };

@@ -92,7 +92,11 @@ class WhatsappCallingController {
             };
 
             if (search) {
-                query.name = { $regex: search, $options: 'i' };
+                query.$or = [
+                    { name: { $regex: search, $options: 'i' } },
+                    { email: { $regex: search, $options: 'i' } },
+                    { phone: { $regex: search, $options: 'i' } }
+                ];
             }
 
             const skip = (parseInt(page) - 1) * parseInt(limit);

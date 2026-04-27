@@ -206,8 +206,20 @@ const settingSchema = new mongoose.Schema({
       'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg',
       'mp4', 'mpeg', 'mov', 'webm',
       'mp3', 'wav', 'ogg',
-      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt'
+      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt'
     ]
+  },
+  storage_limit: {
+    type: Number,
+    default: 100
+  },
+  restore_storage_on_delete: {
+    type: Boolean,
+    default: true
+  },
+  landing_page_enabled: {
+    type: Boolean,
+    default: true
   },
   app_id: {
     type: String,
@@ -349,6 +361,38 @@ const settingSchema = new mongoose.Schema({
     default: false
   },
   paypal_webhook_id: {
+    type: String,
+    default: null
+  },
+  google_client_id: {
+    type: String,
+    default: null
+  },
+  google_client_secret: {
+    type: String,
+    default: null
+  },
+  aws_access_key_id: {
+    type: String,
+    default: null
+  },
+  aws_secret_access_key: {
+    type: String,
+    default: null
+  },
+  aws_region: {
+    type: String,
+    default: null
+  },
+  aws_s3_bucket: {
+    type: String,
+    default: null
+  },
+  is_aws_s3_enabled: {
+    type: Boolean,
+    default: false
+  },
+  whatsapp_phoneno_id: {
     type: String,
     default: null
   }

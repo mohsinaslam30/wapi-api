@@ -4,6 +4,10 @@ import {
   getWhatsAppTypeFromMime,
   getWhatsAppMediaUrl
 } from '../utils/uploadMediaToWhatsapp.js';
+import { saveBufferLocally } from '../utils/whatsapp-message-handler.js';
+import fs from 'fs';
+import path from 'path';
+import axios from 'axios';
 
 
 const WHATSAPP_API_VERSION = 'v19.0';
@@ -134,7 +138,7 @@ const sendWhatsAppAPIMessage = async (params) => {
 };
 
 
-const processMediaUpload = async (params) => {
+const processMediaUpload = async (params, userId = null) => {
   const { file, phoneNumberId, accessToken } = params;
 
   if (!file) {
@@ -143,17 +147,35 @@ const processMediaUpload = async (params) => {
 
   const messageType = getWhatsAppTypeFromMime(file.mimetype);
 
+  let buffer = file.buffer;
+  if (!buffer && file.path) {
+    try {
+      if (file.path.startsWith('http')) {
+        const response = await axios.get(file.path, { responseType: 'arraybuffer' });
+        buffer = Buffer.from(response.data);
+      } else {
+        buffer = fs.readFileSync(path.join(process.cwd(), file.path));
+      }
+    } catch (err) {
+      console.error('[WhatsAppConn] Error reading file buffer:', err.message);
+    }
+  }
+
+  if (!buffer) {
+    throw new Error("Could not retrieve file buffer for WhatsApp upload.");
+  }
+
+  const storedUrl = await saveBufferLocally(buffer, file.mimetype, messageType, userId);
+
   const mediaId = await uploadMediaToWhatsApp({
     phone_number_id: phoneNumberId,
     access_token: accessToken,
-    buffer: file.buffer,
+    buffer: buffer,
     mime_type: file.mimetype,
     filename: file.originalname
   });
 
-  const mediaUrl = await getWhatsAppMediaUrl(mediaId, accessToken);
-
-  return { mediaId, mediaUrl, messageType };
+  return { mediaId, mediaUrl: storedUrl, messageType };
 };
 
 
@@ -290,6 +312,12 @@ export const sendMessage = async (req, res) => {
       });
     }
 
+    const cleanedRecipient = recipientNumber.replace(/[\s\-()\+]/g, '');
+    if (cleanedRecipient.length < 6 || cleanedRecipient.length > 15) {
+      return res.status(400).json({
+        message: 'Recipient number must be between 6 and 15 digits'
+      });
+    }
 
     const whatsappConnection = await WhatsappConnection.findOne({
       user_id: userId
@@ -307,7 +335,7 @@ export const sendMessage = async (req, res) => {
       file: uploadedFile,
       phoneNumberId,
       accessToken
-    });
+    }, userId);
 
     const whatsappPayload = buildWhatsAppPayload({
       recipientNumber,

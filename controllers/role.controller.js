@@ -38,13 +38,18 @@ const buildSearchQuery = (searchTerm) => {
     }
 
     const sanitizedSearch = searchTerm.trim();
+    const conditions = [
+        { name: { $regex: sanitizedSearch, $options: 'i' } },
+        { description: { $regex: sanitizedSearch, $options: 'i' } }
+    ];
 
-    return {
-        $or: [
-            { name: { $regex: sanitizedSearch, $options: 'i' } },
-            { description: { $regex: sanitizedSearch, $options: 'i' } }
-        ]
-    };
+    if (sanitizedSearch.toLowerCase() === 'system') {
+        conditions.push({ system_reserved: true });
+    } else if (sanitizedSearch.toLowerCase() === 'custom') {
+        conditions.push({ system_reserved: false });
+    }
+
+    return { $or: conditions };
 };
 
 const validateRoleData = (data) => {

@@ -526,6 +526,131 @@ export const modules = {
             ADMIN: ['view', 'delete'],
             USER: ['view', 'delete'],
         }
+    },
+    payment_gateways: {
+        actions: {
+            view: 'view.payment_gateways',
+            create: 'create.payment_gateways',
+            update: 'update.payment_gateways',
+            delete: 'delete.payment_gateways',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete']
+        }
+    },
+    appointment_booking: {
+        actions: {
+            view: 'view.appointment_booking',
+            create: 'create.appointment_booking',
+            update: 'update.appointment_booking',
+            delete: 'delete.appointment_booking',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    google_account: {
+        actions: {
+            view: 'view.google_account',
+            create: 'create.google_account',
+            update: 'update.google_account',
+            delete: 'delete.google_account',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    kanban_funnel: {
+        actions: {
+            view: 'view.kanban_funnel',
+            create: 'create.kanban_funnel',
+            update: 'update.kanban_funnel',
+            delete: 'delete.kanban_funnel',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    segments: {
+        actions: {
+            view: 'view.segments',
+            create: 'create.segments',
+            update: 'update.segments',
+            delete: 'delete.segments',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    impersonation: {
+        actions: {
+            view: 'view.impersonation'
+        },
+        roles: {
+            ADMIN: ['view']
+        }
+    },
+    quick_replies: {
+        actions: {
+            view: 'view.quick_replies',
+            create: 'create.quick_replies',
+            update: 'update.quick_replies',
+            delete: 'delete.quick_replies',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    guides: {
+        actions: {
+            view: 'view.guide',
+            create: 'create.guide',
+            update: 'update.guide',
+            delete: 'delete.guide',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view']
+        }
+    },
+    facebook_ads: {
+        actions: {
+            view: 'view.facebook_ads',
+            create: 'create.facebook_ads',
+            update: 'update.facebook_ads',
+            delete: 'delete.facebook_ads',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    facebook_leads: {
+        actions: {
+            view: 'view.facebook_leads',
+            create: 'create.facebook_leads',
+            update: 'update.facebook_leads',
+            delete: 'delete.facebook_leads',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
+    facebook: {
+        actions: {
+            manage: 'manage.facebook'
+        },
+        roles: {
+            ADMIN: ['manage'],
+            USER: ['manage']
+        }
     }
 };
 

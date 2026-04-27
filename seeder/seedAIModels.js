@@ -14,7 +14,7 @@ async function seedAIModels() {
         model_id: 'gpt-4o',
         api_endpoint: 'https://api.openai.com/v1/chat/completions',
         request_format: 'openai',
-        status: 'inactive',
+        status: 'active',
         description: 'OpenAI flagship multimodal model.',
         created_by: adminId
       },
@@ -25,7 +25,7 @@ async function seedAIModels() {
         model_id: 'gemini-2.5-flash-lite',
         api_endpoint: 'https://generativelanguage.googleapis.com/v1',
         request_format: 'google',
-        status: 'inactive',
+        status: 'active',
         description: 'Google highly capable multimodal model.',
         created_by: adminId
       },
@@ -36,7 +36,7 @@ async function seedAIModels() {
         model_id: 'grok-beta',
         api_endpoint: 'https://api.x.ai/v1/chat/completions',
         request_format: 'openai',
-        status: 'inactive',
+        status: 'active',
         description: 'xAI Grok model, known for its real-time knowledge.',
         created_by: adminId
       },
@@ -47,7 +47,7 @@ async function seedAIModels() {
         model_id: 'deepseek-chat',
         api_endpoint: 'https://api.deepseek.com/chat/completions',
         request_format: 'openai',
-        status: 'inactive',
+        status: 'active',
         description: 'DeepSeek highly efficient and capable model.',
         created_by: adminId
       }

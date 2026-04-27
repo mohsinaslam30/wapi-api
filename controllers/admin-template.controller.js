@@ -119,8 +119,8 @@ export const createAdminTemplate = async (req, res) => {
           const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
           if (headerComp) {
             headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
-            headerComp.example = { header_handle: [file.path] };
             headerComp.media_url = file.path;
+            headerComp.example = { header_handle: [headerComp.media_url] };
             headerComp.original_filename = file.originalname;
           }
         }
@@ -399,7 +399,14 @@ export const getAllAdminTemplates = async (req, res) => {
     }
 
     if (search) {
-      filter.$or = [{ template_name: { $regex: search, $options: "i" } }, { message_body: { $regex: search, $options: "i" } }];
+      filter.$or = [
+        { template_name: { $regex: search, $options: "i" } },
+        { template_type: { $regex: search, $options: "i" } },
+        { category: { $regex: search, $options: "i" } },
+        { sector: { $regex: search, $options: "i" } },
+        { template_category: { $regex: search, $options: "i" } },
+        { status: { $regex: search, $options: "i" } },
+      ];
     }
 
     const totalCount = await Template.countDocuments(filter);
@@ -629,8 +636,8 @@ export const updateAdminTemplate = async (req, res) => {
           const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
           if (headerComp) {
             headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
-            headerComp.example = { header_handle: [file.path] };
             headerComp.media_url = file.path;
+            headerComp.example = { header_handle: [headerComp.media_url] };
             headerComp.original_filename = file.originalname;
           }
         }

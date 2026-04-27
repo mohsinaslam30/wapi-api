@@ -250,8 +250,8 @@ export const getMessagesStatus = async (req, res) => {
       _id: { $in: messageIds },
       deleted_at: null
     }).select(
-      '_id is_delivered delivered_at delivery_status is_seen seen_at read_status wa_status wa_status_timestamp'
-    );
+      '_id user_id is_delivered delivered_at delivery_status is_seen seen_at read_status wa_status wa_status_timestamp'
+    ).populate('user_id', 'name');
 
     return res.status(200).json({
       success: true,

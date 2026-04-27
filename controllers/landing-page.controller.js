@@ -1,5 +1,20 @@
-import { LandingPage, Plan, Testimonial, Faq } from '../models/index.js';
+import { LandingPage, Plan, Testimonial, Faq, Setting } from '../models/index.js';
 import { uploader } from '../utils/upload.js';
+import mongoose from 'mongoose';
+
+const getValidId = (item) => {
+  if (!item) return null;
+  if (typeof item === 'string') return mongoose.Types.ObjectId.isValid(item) ? item : null;
+  if (typeof item === 'object') {
+    const id = item._id || item;
+    if (typeof id === 'string') return mongoose.Types.ObjectId.isValid(id) ? id : null;
+    if (id && typeof id === 'object' && id._id) {
+      const innerId = String(id._id);
+      return mongoose.Types.ObjectId.isValid(innerId) ? innerId : null;
+    }
+  }
+  return null;
+};
 
 const getLandingPage = async (req, res) => {
   try {
@@ -249,9 +264,12 @@ const updateLandingPage = async (req, res) => {
 
     if (pricing_section) {
       if (pricing_section.plans && Array.isArray(pricing_section.plans)) {
-        updateData['pricing_section.plans'] = pricing_section.plans.map(plan => ({
-          _id: plan._id || plan
-        }));
+        updateData['pricing_section.plans'] = pricing_section.plans
+          .map(plan => {
+            const id = getValidId(plan);
+            return id ? { _id: id } : null;
+          })
+          .filter(Boolean);
       }
 
       if (pricing_section.title !== undefined) updateData['pricing_section.title'] = pricing_section.title;
@@ -263,9 +281,12 @@ const updateLandingPage = async (req, res) => {
 
     if (testimonials_section) {
       if (testimonials_section.testimonials && Array.isArray(testimonials_section.testimonials)) {
-        updateData['testimonials_section.testimonials'] = testimonials_section.testimonials.map(testimonial => ({
-          _id: testimonial._id || testimonial
-        }));
+        updateData['testimonials_section.testimonials'] = testimonials_section.testimonials
+          .map(testimonial => {
+            const id = getValidId(testimonial);
+            return id ? { _id: id } : null;
+          })
+          .filter(Boolean);
       }
 
       if (testimonials_section.title !== undefined) updateData['testimonials_section.title'] = testimonials_section.title;
@@ -274,9 +295,12 @@ const updateLandingPage = async (req, res) => {
 
     if (faq_section) {
       if (faq_section.faqs && Array.isArray(faq_section.faqs)) {
-        updateData['faq_section.faqs'] = faq_section.faqs.map(faq => ({
-          _id: faq._id || faq
-        }));
+        updateData['faq_section.faqs'] = faq_section.faqs
+          .map(faq => {
+            const id = getValidId(faq);
+            return id ? { _id: id } : null;
+          })
+          .filter(Boolean);
       }
 
       if (faq_section.title !== undefined) updateData['faq_section.title'] = faq_section.title;
@@ -332,7 +356,7 @@ const uploadLandingImage = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Image uploaded successfully',
-      imageUrl: `/uploads/landing/${req.file.filename}`
+      imageUrl: req.file.path
     });
   } catch (error) {
     console.error('Error uploading landing page image:', error);

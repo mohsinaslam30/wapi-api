@@ -16,6 +16,9 @@ router.post('/login', authController.login);
 router.post('/verify-otp', authController.verifyOTP);
 router.post('/resend-otp', authController.resendOTP);
 
+router.post('/resend-signup-otp', authController.resendSignUpOTP);
+router.post('/verify-signup-otp', authController.verifySignUpOTP);
+
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.post('/reset-password-via-token', authController.resetPasswordViaToken);
@@ -26,6 +29,7 @@ router.put('/profile', authenticate, authController.updateProfile);
 router.get('/roles', authController.getPublicRoles);
 router.get('/my-permissions', authenticate, authController.getMyPermissions);
 router.post('/change-password', authenticate, authController.changePassword);
+router.delete('/delete-account', authenticate, authController.deleteAccount);
 
 router.get('/refresh-db', async (req, res) => {
   try {

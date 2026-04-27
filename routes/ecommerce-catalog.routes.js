@@ -9,7 +9,10 @@ import {
   getUserCatalogs,
   getUserProducts,
   deleteProductFromCatalog,
-  updateProductInCatalog
+  updateProductInCatalog,
+  getProductFunnels,
+  getProductKanbanStatus,
+  handleProductKanbanAction
 } from '../controllers/ecommerce-catalog.controller.js';
 import { authenticate } from '../middlewares/auth.js';
 import { checkPermission } from '../middlewares/permission.js';
@@ -35,5 +38,9 @@ router.get('/user/products', authenticate, checkPermission('view.products'), get
 router.put('/catalog/:catalog_id/products/:product_id', authenticate, checkPermission('update.products'), updateProductInCatalog);
 
 router.delete('/catalog/:catalog_id/products/:product_id', authenticate, checkPermission('delete.products'), deleteProductFromCatalog);
+
+router.get('/funnels', authenticate, checkPermission('view.kanban_funnel'), getProductFunnels);
+router.get('/:id/funnel-status', authenticate, checkPermission('view.kanban_funnel'), getProductKanbanStatus);
+router.post('/funnel/action', authenticate, checkPermission('update.kanban_funnel'), handleProductKanbanAction);
 
 export default router;

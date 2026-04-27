@@ -27,6 +27,10 @@ const contactSchema = new mongoose.Schema({
     ref: 'Tag',
     trim: true
   }],
+  segments: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Segment'
+  }],
 
   email: {
     type: String,
@@ -129,6 +133,7 @@ contactSchema.index({ user_id: 1 });
 contactSchema.index({ created_by: 1 });
 contactSchema.index({ assigned_to: 1 });
 contactSchema.index({ tags: 1 });
+contactSchema.index({ segments: 1 });
 contactSchema.index({ status: 1 });
 contactSchema.index({ type: 1 });
 contactSchema.index({ deleted_at: 1 });

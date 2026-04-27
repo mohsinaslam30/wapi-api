@@ -21,26 +21,16 @@ import {
     getSubscriptionCheckoutUrl,
     getSubscriptionStats,
     assignPlanToUser,
-    downloadInvoice
+    downloadInvoice,
+    overrideSubscriptionLimits,
+    resetSubscriptionLimits
 } from '../controllers/subscription.controller.js';
 import { authenticateUser, authorizeAdmin, authenticate } from '../middlewares/auth.js';
 import { checkPermission } from '../middlewares/permission.js';
 
 const router = express.Router();
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const dir = 'public/uploads/receipts';
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        cb(null, dir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${Date.now()}-${file.originalname}`);
-    }
-});
-const upload = multer({ storage });
+import { uploader } from '../utils/upload.js';
 
 router.get('/my-subscription', authenticate, checkPermission('view.subscriptions'), getUserSubscription);
 router.get('/usage', authenticate, checkPermission('view.subscriptions'), getSubscriptionUsage);
@@ -48,7 +38,7 @@ router.get('/checkout-url', authenticate, checkPermission('view.subscriptions'),
 router.post('/create-stripe', authenticate, checkPermission('create.subscriptions'), createStripeSubscription);
 router.post('/create-razorpay', authenticate, checkPermission('create.subscriptions'), createRazorpaySubscription);
 router.post('/create-paypal', authenticate, checkPermission('create.subscriptions'), createPayPalSubscription);
-router.post('/create-manual', authenticate, checkPermission('create.subscriptions'), upload.single('transaction_receipt'), createManualSubscription);
+router.post('/create-manual', authenticate, checkPermission('create.subscriptions'), uploader('receipts').single('transaction_receipt'), createManualSubscription);
 router.get('/:id/manage-portal', authenticate, checkPermission('view.subscriptions'), getManagePortalUrl);
 router.post('/:id/cancel', authenticate, checkPermission('update.subscriptions'), cancelSubscription);
 router.post('/:id/resume', authenticate, checkPermission('update.subscriptions'), resumeSubscription);
@@ -62,5 +52,7 @@ router.get('/pending-manual', authenticate, checkPermission('view.subscriptions'
 router.post('/:id/approve-manual', authenticate, checkPermission('update.subscriptions'), approveManualSubscription);
 router.post('/:id/reject-manual', authenticate, checkPermission('update.subscriptions'), rejectManualSubscription);
 router.post('/assign', authenticate, checkPermission('update.subscriptions'), assignPlanToUser);
+router.patch('/:userId/override-limits', authenticate, checkPermission('update.subscriptions'), overrideSubscriptionLimits);
+router.delete('/:userId/reset-limits', authenticate, checkPermission('update.subscriptions'), resetSubscriptionLimits);
 
 export default router;

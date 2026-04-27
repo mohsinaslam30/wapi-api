@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
-import { ReplyMaterial, Template, EcommerceCatalog, Sequence, Role, Form, AppointmentConfig } from '../models/index.js';
+import { ReplyMaterial, Template, EcommerceCatalog, Sequence, Role, Form, AppointmentConfig, User, Setting } from '../models/index.js';
+import { deleteFile } from '../utils/aws-storage.js';
 
 const buildAbsoluteUrl = (req, maybeRelativeUrl) => {
     if (!maybeRelativeUrl) return null;
@@ -10,17 +11,6 @@ const buildAbsoluteUrl = (req, maybeRelativeUrl) => {
     return `${baseUrl}${maybeRelativeUrl.startsWith('/') ? '' : '/'}${maybeRelativeUrl}`;
 };
 
-const deleteLocalFile = (relativePath) => {
-    if (!relativePath || typeof relativePath !== 'string') return;
-    const absolutePath = path.join(process.cwd(), relativePath.replace(/^\//, ''));
-    if (fs.existsSync(absolutePath)) {
-        try {
-            fs.unlinkSync(absolutePath);
-        } catch (err) {
-            console.error(`Error deleting file ${absolutePath}:`, err);
-        }
-    }
-};
 
 export const createReplyMaterial = async (req, res) => {
     try {
@@ -36,7 +26,7 @@ export const createReplyMaterial = async (req, res) => {
             if (!req.file) {
                 return res.status(400).json({ success: false, message: `File is required for type ${type}` });
             }
-            filePath = `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
+            filePath = req.file.path.startsWith('http') ? req.file.path : `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
         }
 
         const replyMaterial = await ReplyMaterial.create({
@@ -46,9 +36,14 @@ export const createReplyMaterial = async (req, res) => {
             name,
             content: (type === 'text' || type === 'flow') ? content : null,
             file_path: filePath,
+            file_size: req.file ? req.file.size : 0,
             flow_id: type === 'flow' ? req.body.flow_id : null,
             button_text: type === 'flow' ? req.body.button_text : null
         });
+
+        if (req.file) {
+            await User.findByIdAndUpdate(userId, { $inc: { storage_used: req.file.size } });
+        }
 
         return res.status(201).json({
             success: true,
@@ -61,7 +56,7 @@ export const createReplyMaterial = async (req, res) => {
     } catch (error) {
         if (req.file) {
             const filePath = `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
-            deleteLocalFile(filePath);
+            await deleteFile(filePath);
         }
         console.error('Error creating reply material:', error);
         return res.status(500).json({ success: false, message: 'Failed to create reply material', error: error.message });
@@ -107,7 +102,8 @@ export const getReplyMaterials = async (req, res) => {
             result[typeKey] = {
                 items: items.map(item => ({
                     ...item,
-                    file_url: buildAbsoluteUrl(req, item.file_path)
+                    file_url: buildAbsoluteUrl(req, item.file_path),
+                    file_size: item.file_size
                 })),
                 pagination: {
                     currentPage: parseInt(page),
@@ -349,8 +345,8 @@ export const updateReplyMaterial = async (req, res) => {
         const item = await ReplyMaterial.findOne({ _id: id, user_id: userId, deleted_at: null });
         if (!item) {
             if (req.file) {
-                const filePath = `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
-                deleteLocalFile(filePath);
+                const filePath = req.file.path.startsWith('http') ? req.file.path : `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
+                await deleteFile(filePath);
             }
             return res.status(404).json({ success: false, message: 'Reply material not found' });
         }
@@ -364,8 +360,12 @@ export const updateReplyMaterial = async (req, res) => {
 
         if (req.file) {
             const oldPath = item.file_path;
-            item.file_path = `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
-            if (oldPath) deleteLocalFile(oldPath);
+            const oldSize = item.file_size || 0;
+            item.file_path = req.file.path.startsWith('http') ? req.file.path : `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
+            item.file_size = req.file.size;
+            if (oldPath) await deleteFile(oldPath);
+            
+            await User.findByIdAndUpdate(userId, { $inc: { storage_used: req.file.size - oldSize } });
         }
 
         await item.save();
@@ -381,7 +381,7 @@ export const updateReplyMaterial = async (req, res) => {
     } catch (error) {
         if (req.file) {
             const filePath = `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
-            deleteLocalFile(filePath);
+            await deleteFile(filePath);
         }
         console.error('Error updating reply material:', error);
         return res.status(500).json({ success: false, message: 'Failed to update reply material', error: error.message });
@@ -399,10 +399,17 @@ export const deleteReplyMaterial = async (req, res) => {
         }
 
         const filePath = item.file_path;
+        const fileSize = item.file_size || 0;
         item.deleted_at = new Date();
         await item.save();
 
-        if (filePath) deleteLocalFile(filePath);
+        if (filePath) await deleteFile(filePath);
+
+        const setting = await Setting.findOne().select('restore_storage_on_delete').lean();
+        const restoreStorage = setting?.restore_storage_on_delete !== false;
+        if (restoreStorage) {
+            await User.findByIdAndUpdate(userId, { $inc: { storage_used: -fileSize } });
+        }
 
         return res.status(200).json({ success: true, message: 'Reply material deleted successfully' });
     } catch (error) {
@@ -438,7 +445,14 @@ export const bulkDeleteReplyMaterials = async (req, res) => {
         );
 
         for (const item of items) {
-            if (item.file_path) deleteLocalFile(item.file_path);
+            if (item.file_path) await deleteFile(item.file_path);
+        }
+
+        const totalDeletedSize = items.reduce((acc, curr) => acc + (curr.file_size || 0), 0);
+        const setting = await Setting.findOne().select('restore_storage_on_delete').lean();
+        const restoreStorage = setting?.restore_storage_on_delete !== false;
+        if (restoreStorage) {
+            await User.findByIdAndUpdate(userId, { $inc: { storage_used: -totalDeletedSize } });
         }
 
         return res.status(200).json({

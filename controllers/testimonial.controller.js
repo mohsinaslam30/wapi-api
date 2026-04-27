@@ -1,5 +1,6 @@
 import { Testimonial } from '../models/index.js';
 import mongoose from 'mongoose';
+import { deleteFile } from '../utils/aws-storage.js';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
@@ -242,7 +243,7 @@ export const createTestimonial = async (req, res) => {
             user_name: userName.trim(),
             user_post: userPost.trim(),
             rating: rating,
-            user_image: req.file?.filename || null
+            user_image: req.file ? req.file.path : null
         });
 
         return res.status(201).json({
@@ -325,8 +326,10 @@ export const updateTestimonial = async (req, res) => {
             existingTestimonial.status = status;
         }
 
-        if (req.file?.filename) {
-            existingTestimonial.user_image = req.file.filename;
+        if (req.file) {
+            const oldImage = existingTestimonial.user_image;
+            existingTestimonial.user_image = req.file ? req.file.path : null
+            if (oldImage) await deleteFile(oldImage);
         }
 
         await existingTestimonial.save();
@@ -421,6 +424,12 @@ export const deleteTestimonial = async (req, res) => {
 
         const foundIds = existingTestimonials.map(testimonial => testimonial._id.toString());
         const notFoundIds = validIds.filter(id => !foundIds.includes(id.toString()));
+
+        for (const testimonial of existingTestimonials) {
+            if (testimonial.user_image) {
+                await deleteFile(testimonial.user_image);
+            }
+        }
 
         const deleteResult = await Testimonial.deleteMany({ _id: { $in: foundIds } });
 

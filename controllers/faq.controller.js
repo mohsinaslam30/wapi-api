@@ -47,13 +47,18 @@ const buildSearchQuery = (searchTerm) => {
     }
 
     const sanitizedSearch = searchTerm.trim();
+    const conditions = [
+        { title: { $regex: sanitizedSearch, $options: 'i' } },
+        { description: { $regex: sanitizedSearch, $options: 'i' } }
+    ];
 
-    return {
-        $or: [
-            { title: { $regex: sanitizedSearch, $options: 'i' } },
-            { description: { $regex: sanitizedSearch, $options: 'i' } }
-        ]
-    };
+    if (sanitizedSearch.toLowerCase() === 'active' || sanitizedSearch.toLowerCase() === 'published') {
+        conditions.push({ status: true });
+    } else if (sanitizedSearch.toLowerCase() === 'inactive' || sanitizedSearch.toLowerCase() === 'draft') {
+        conditions.push({ status: false });
+    }
+
+    return { $or: conditions };
 };
 
 const createCaseInsensitivePattern = (text) => {
