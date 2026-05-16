@@ -264,9 +264,15 @@ const transformToMetaSpec = async (data, pageId, imageHash, videoId, accessToken
     optimizationGoal = 'IMPRESSIONS';
     billingEvent = 'IMPRESSIONS';
     destinationType = null;
+  } else if (data.objective === 'OUTCOME_LEADS') {
+    optimizationGoal = 'LEAD_GENERATION';
+    billingEvent = 'IMPRESSIONS';
+    destinationType = 'ON_AD';
   }
 
-  if (!optimizationGoal) optimizationGoal = 'REPLIES';
+  if (!optimizationGoal) {
+    optimizationGoal = data.objective === 'OUTCOME_LEADS' ? 'LEAD_GENERATION' : 'REPLIES';
+  }
 
   const adsetParams = {
     name: `${data.name || 'AdSet'}`,
@@ -285,10 +291,17 @@ const transformToMetaSpec = async (data, pageId, imageHash, videoId, accessToken
     page_id: pageId
   };
 
-  const ctaObject = {
+  let ctaObject = {
     type: 'WHATSAPP_MESSAGE',
     value: { app_destination: 'WHATSAPP' }
   };
+
+  if (data.objective === 'OUTCOME_LEADS' && data.lead_gen_form_id) {
+    ctaObject = {
+      type: data.cta_type || 'SIGN_UP',
+      value: { lead_gen_form_id: data.lead_gen_form_id }
+    };
+  }
 
   if (creative_type === 'CAROUSEL' && Array.isArray(carousel_cards)) {
     objectStorySpec.link_data = {
@@ -619,10 +632,18 @@ export const createFbAdCampaign = async (req, res) => {
       access_token: token
     };
 
-    if (is_cbo) {
+    // If CBO is true but no campaign budget is provided, we must treat it as Ad Set budget
+    if (is_cbo && !daily_budget && !lifetime_budget) {
+      is_cbo = false;
+    }
+
+    if (is_cbo && (daily_budget || lifetime_budget)) {
       if (daily_budget) campaignMetaParams.daily_budget = String(Math.round(Number(daily_budget) * 100));
       if (lifetime_budget) campaignMetaParams.lifetime_budget = String(Math.round(Number(lifetime_budget) * 100));
       campaignMetaParams.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
+    } else {
+      // If no campaign budget is provided, we must explicitly set this for Meta v20+
+      campaignMetaParams.is_adset_budget_sharing_enabled = 'false';
     }
 
     const fbCampaignId = await internalCreateMetaCampaign(adAccountId, campaignMetaParams, token);
@@ -762,6 +783,7 @@ export const createFbAdCampaign = async (req, res) => {
               ad_message: creativeData.body || '',
               automation_trigger: automationTrigger,
               welcome_experience: welcomeExperience,
+              lead_gen_form_id: adData.lead_gen_form_id,
               last_synced_at: new Date()
             });
             createdObjects.ads.push(adRecord);
@@ -805,10 +827,20 @@ export const createFbAdCampaign = async (req, res) => {
       console.error('[createFbAdCampaign] Rollback failed:', rollbackErr.message);
     }
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
       error: 'Facebook ad creation failed',
-      details: fbError?.message || error.message
+      details: fbError?.message || error.message,
+      fb_error: fbError ? {
+        message: fbError.message,
+        user_title: fbError.error_user_title,
+        user_msg: fbError.error_user_msg,
+        code: fbError.code,
+        subcode: fbError.error_subcode,
+        error_data: fbError.error_data,
+        type: fbError.type,
+        fbtrace_id: fbError.fbtrace_id
+      } : null
     });
   }
 };
@@ -1437,7 +1469,8 @@ export const createFbAd = async (req, res) => {
         carousel_cards,
         welcome_message,
         welcome_experience,
-        ad_creative
+        ad_creative,
+        lead_gen_form_id: req.body.lead_gen_form_id
       },
       page.page_id, imageHash, videoId, token
     );
@@ -1465,13 +1498,28 @@ export const createFbAd = async (req, res) => {
       ad_message: ad_message || baseCreative.body || '',
       automation_trigger: finalAutomationTrigger,
       welcome_experience: welcome_experience || baseCreative.welcome_experience || { text: '', type: 'none', questions: [] },
+      lead_gen_form_id: req.body.lead_gen_form_id,
       last_synced_at: new Date()
     });
 
     return res.status(201).json({ success: true, message: 'Ad created successfully', data: localAd });
   } catch (error) {
     console.error('[createFbAd] Error:', error?.response?.data || error.message);
-    return res.status(500).json({ success: false, error: 'Failed to create Ad' });
+    const fbError = error?.response?.data?.error;
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: 'Failed to create Ad',
+      details: fbError?.message || error.message,
+      fb_error: fbError ? {
+        message: fbError.message,
+        user_title: fbError.error_user_title,
+        user_msg: fbError.error_user_msg,
+        code: fbError.code,
+        subcode: fbError.error_subcode,
+        type: fbError.type,
+        fbtrace_id: fbError.fbtrace_id
+      } : null
+    });
   }
 };
 
@@ -1479,7 +1527,7 @@ export const createFbAd = async (req, res) => {
 export const updateFbAd = async (req, res) => {
   try {
     const userId = getOwnerId(req.user);
-    const { name, status } = req.body;
+    const { name, status, lead_gen_form_id } = req.body;
     const ad = await FacebookAd.findOne({ _id: req.params.id, user_id: userId, deleted_at: null });
 
     if (!ad) return res.status(404).json({ success: false, error: 'Ad not found' });
@@ -1497,6 +1545,7 @@ export const updateFbAd = async (req, res) => {
 
     if (name) ad.name = name;
     if (status) ad.status = status.toLowerCase();
+    if (lead_gen_form_id !== undefined) ad.lead_gen_form_id = lead_gen_form_id;
 
     await ad.save();
     return res.json({ success: true, message: 'Ad updated successfully', data: ad });

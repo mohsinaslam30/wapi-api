@@ -51,6 +51,8 @@ const automationFlowSchema = new mongoose.Schema({
             'appointment_flow',
             'api',
             'wait_for_reply',
+            'form_flow',
+            'add_to_segment',
             'custom'
           ]
         },
@@ -103,7 +105,7 @@ const automationFlowSchema = new mongoose.Schema({
   settings: {
     execution_timeout: { type: Number, default: 50000 },
     max_executions: { type: Number, default: 1000 },
-    error_handling: { type: String, default: 'stop' }, 
+    error_handling: { type: String, default: 'stop' },
     retry_attempts: { type: Number, default: 3 }
   },
   statistics: {

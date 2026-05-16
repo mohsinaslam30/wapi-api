@@ -13,13 +13,17 @@ export const checkImpersonationStatus = async (req, res, next) => {
   try {
     const session = await Session.findOne({
       session_token: token,
-      agenda: { $regex: /^impersonation_by_/ },
+      agenda: { $regex: /^(impersonation_by_|self_tenant_mode)/ },
       status: 'active',
     }).lean();
 
     if (session) {
-      req.isImpersonating = true;
-      req.impersonatorId = session.agenda.replace('impersonation_by_', '');
+      if (session.agenda === 'self_tenant_mode') {
+        req.isSelfTenant = true;
+      } else {
+        req.isImpersonating = true;
+        req.impersonatorId = session.agenda.replace('impersonation_by_', '');
+      }
     }
   } catch (err) {
     console.log('Error while impersonating',err);

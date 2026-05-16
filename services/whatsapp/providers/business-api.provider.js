@@ -1,5 +1,9 @@
 
 
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import mongoose from 'mongoose';
 import BaseProvider from './base.provider.js';
 import { WhatsappConnection, Message, Contact, Template } from '../../../models/index.js';
 import {
@@ -9,7 +13,7 @@ import {
 } from '../../../utils/uploadMediaToWhatsapp.js';
 import { saveBufferLocally, getExtension } from '../../../utils/whatsapp-message-handler.js';
 
-const WHATSAPP_API_VERSION = 'v22.0';
+const WHATSAPP_API_VERSION = 'v25.0';
 const WHATSAPP_GRAPH_API_APP_URL = 'https://graph.facebook.com';
 
 const MESSAGE_TYPES = {
@@ -21,7 +25,8 @@ const MESSAGE_TYPES = {
   INTERACTIVE: 'interactive',
   LOCATION: 'location',
   TEMPLATE: 'template',
-  REACTION: 'reaction'
+  REACTION: 'reaction',
+  TYPING: 'typing'
 };
 
 export default class BusinessAPIProvider extends BaseProvider {
@@ -151,12 +156,46 @@ export default class BusinessAPIProvider extends BaseProvider {
             action: {
               name: 'cta_url',
               parameters: {
-                display_text: buttonParams?.display_text || 'Visit',
-                url: buttonParams?.url || ''
+                display_text: params.buttonParams?.display_text || 'Visit',
+                url: params.buttonParams?.url || ''
+              }
+            }
+          };
+        } else if (interactiveType === 'flow') {
+          payload.interactive = {
+            type: 'flow',
+            body: {
+              text: messageText
+            },
+            action: {
+              name: 'flow',
+              parameters: {
+                flow_id: params.flowId,
+                mode: 'published',
+                flow_cta: params.buttonText || 'Open',
+                flow_action: 'navigate',
+                flow_context: {
+                  flow_id: params.flowId,
+                  screen: 'START'
+                }
               }
             }
           };
         }
+        break;
+
+      case MESSAGE_TYPES.TYPING:
+        delete payload.to;
+        delete payload.type;
+        payload.status = 'read';
+        payload.message_id = params.replyMessageId || params.wa_message_id;
+        if (!payload.message_id) {
+          console.warn('[BusinessAPI] Cannot send typing indicator: No message_id found to associate with.');
+          return { success: false, error: 'no_message_id' };
+        }
+        payload.typing_indicator = {
+          type: 'text'
+        };
         break;
 
       case MESSAGE_TYPES.TEMPLATE:
@@ -169,29 +208,51 @@ export default class BusinessAPIProvider extends BaseProvider {
 
         if (templateComponents && templateComponents.length > 0) {
           const resolvedComponents = await Promise.all(templateComponents.map(async (comp) => {
-            if (comp.type !== 'carousel' || !comp.cards) return comp;
-            const resolvedCards = await Promise.all(comp.cards.map(async (card) => {
-              const resolvedCardComponents = await Promise.all((card.components || []).map(async (cardComp) => {
-                if (cardComp.type !== 'header') return cardComp;
-                const resolvedParams = await Promise.all((cardComp.parameters || []).map(async (p) => {
-                  if (!p._uploadedFile) return p;
-                  const file = p._uploadedFile;
-                  const mediaId = await uploadMediaToWhatsApp({
-                    phone_number_id: params.phone_number_id,
-                    access_token: params.access_token,
-                    buffer: file.buffer,
-                    mime_type: file.mimetype,
-                    filename: file.originalname
-                  });
-                  const { _uploadedFile, ...rest } = p;
-                  rest[p.type] = { id: mediaId };
-                  return rest;
+
+            if (comp.type === 'header' && Array.isArray(comp.parameters)) {
+              const resolvedParams = comp.parameters.map(p => {
+                if (p.type && p[p.type] && p[p.type].link) {
+                  return { ...p, [p.type]: { ...p[p.type], link: this.getPublicMediaUrl(p[p.type].link) } };
+                }
+                return p;
+              });
+              return { ...comp, parameters: resolvedParams };
+            }
+
+            if (comp.type === 'carousel' && Array.isArray(comp.cards)) {
+              const resolvedCards = await Promise.all(comp.cards.map(async (card) => {
+                const resolvedCardComponents = await Promise.all((card.components || []).map(async (cardComp) => {
+                  if (cardComp.type !== 'header' && cardComp.type !== 'button') return cardComp;
+
+                  const resolvedParams = await Promise.all((cardComp.parameters || []).map(async (p) => {
+                    if (p._uploadedFile) {
+                      const file = p._uploadedFile;
+                      const mediaId = await uploadMediaToWhatsApp({
+                        phone_number_id: params.phone_number_id,
+                        access_token: params.access_token,
+                        buffer: file.buffer,
+                        mime_type: file.mimetype,
+                        filename: file.originalname
+                      });
+                      const { _uploadedFile, ...rest } = p;
+                      rest[p.type] = { id: mediaId };
+                      return rest;
+                    }
+                    
+                    if (p.type && p[p.type] && p[p.type].link) {
+                      return { ...p, [p.type]: { ...p[p.type], link: this.getPublicMediaUrl(p[p.type].link) } };
+                    }
+
+                    return p;
+                  }));
+                  return { ...cardComp, parameters: resolvedParams };
                 }));
-                return { ...cardComp, parameters: resolvedParams };
+                return { ...card, components: resolvedCardComponents };
               }));
-              return { ...card, components: resolvedCardComponents };
-            }));
-            return { ...comp, cards: resolvedCards };
+              return { ...comp, cards: resolvedCards };
+            }
+
+            return comp;
           }));
           payload.template.components = resolvedComponents;
         }
@@ -206,6 +267,7 @@ export default class BusinessAPIProvider extends BaseProvider {
         };
         break;
 
+
       default:
         throw new Error(`Unsupported message type: ${messageType}`);
     }
@@ -217,7 +279,7 @@ export default class BusinessAPIProvider extends BaseProvider {
     const { phone_number_id, access_token, payload } = params;
     console.log("phone_number_id", phone_number_id);
     const apiUrl = `${WHATSAPP_GRAPH_API_APP_URL}/${WHATSAPP_API_VERSION}/${phone_number_id}/messages`;
-
+    console.log(`[BusinessAPI] Calling API URL: ${apiUrl}`);
     console.log('Sending WhatsApp API Payload:', JSON.stringify(payload, null, 2));
 
     const response = await fetch(apiUrl, {
@@ -231,6 +293,10 @@ export default class BusinessAPIProvider extends BaseProvider {
 
     const responseData = await response.json();
     if (!response.ok) {
+      if (payload.type === 'typing_indicator') {
+        console.warn('[BusinessAPI] Typing indicator not supported for this account. Skipping.');
+        return { success: true, warning: 'typing_not_supported' };
+      }
       throw new Error(
         `WhatsApp API error: ${responseData.error?.error_data?.details || 'Unknown error'}`
       );
@@ -259,13 +325,29 @@ export default class BusinessAPIProvider extends BaseProvider {
     }
 
     let buffer = file.buffer;
-    if (!buffer && file.path) {
+    if (!buffer && (file.path || file.url)) {
+      const target = file.path || file.url;
       try {
-        if (file.path.startsWith('http')) {
-          const response = await axios.get(file.path, { responseType: 'arraybuffer' });
+        const isLocalHost = target.includes('localhost') || target.includes('127.0.0.1');
+        if (target.startsWith('http') && !isLocalHost) {
+          const response = await axios.get(target, { responseType: 'arraybuffer' });
           buffer = Buffer.from(response.data);
+        } else if (target.startsWith('blob:')) {
+          console.error('[BusinessAPI] Cannot process browser-side blob URL in backend:', target);
+          return { mediaId: null, localPath: null, messageType: MESSAGE_TYPES.TEXT };
         } else {
-          buffer = fs.readFileSync(path.join(process.cwd(), file.path));
+         let diskPath = target;
+          if (isLocalHost) {
+          const urlObj = new URL(target);
+            diskPath = urlObj.pathname;
+          }
+          const absolutePath = path.join(process.cwd(), diskPath.startsWith('/') ? diskPath : `/${diskPath}`);
+          if (fs.existsSync(absolutePath)) {
+            buffer = fs.readFileSync(absolutePath);
+          } else if (target.startsWith('http')) {
+            const response = await axios.get(target, { responseType: 'arraybuffer' });
+            buffer = Buffer.from(response.data);
+          }
         }
       } catch (err) {
         console.error('[BusinessAPI] Error reading file for buffer:', err.message);
@@ -287,7 +369,7 @@ export default class BusinessAPIProvider extends BaseProvider {
       phone_number_id: phone_number_id,
       access_token: access_token,
       buffer: buffer,
-      mime_type: file.mimetype,
+      mime_type: uploadMimeType,
       filename: file.originalname
     });
 
@@ -298,14 +380,25 @@ export default class BusinessAPIProvider extends BaseProvider {
   getPublicMediaUrl(filePath) {
     if (!filePath) return null;
 
+    const appUrl = process.env.APP_URL || '';
+
     if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      if (appUrl && filePath.includes('localhost')) {
+        try {
+          const urlObj = new URL(filePath);
+          const cleanAppUrl = appUrl.endsWith('/') ? appUrl.slice(0, -1) : appUrl;
+          return `${cleanAppUrl}${urlObj.pathname}${urlObj.search}`;
+        } catch (e) {
+          return filePath;
+        }
+      }
       return filePath;
     }
 
-    const appUrl = process.env.APP_URL || '';
     if (appUrl) {
       const cleanPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
-      return `${appUrl}${cleanPath}`;
+      const cleanAppUrl = appUrl.endsWith('/') ? appUrl.slice(0, -1) : appUrl;
+      return `${cleanAppUrl}${cleanPath}`;
     }
 
     console.warn('[BusinessAPI] APP_URL not set, media URL may not be accessible:', filePath);
@@ -370,12 +463,14 @@ export default class BusinessAPIProvider extends BaseProvider {
     let fileMediaUrl = null;
     let localFilePath = null;
     let isVoiceNote = false;
-    if (file && messageType !== 'interactive') {
-      if (file.buffer) {
-        console.log('[BusinessAPI] Uploading media file with buffer:', {
+    if (file) {
+      if (file.buffer || file.url || file.path) {
+        console.log('[BusinessAPI] Uploading media file:', {
           mimetype: file.mimetype,
           originalname: file.originalname,
-          size: file.size || file.buffer.length
+          size: file.size || (file.buffer ? file.buffer.length : 'N/A'),
+          url: file.url,
+          path: file.path
         });
         const mediaResult = await this.processMediaUpload({
           file,
@@ -392,9 +487,6 @@ export default class BusinessAPIProvider extends BaseProvider {
           isVoiceNote,
           messageType: mediaResult.messageType
         });
-      } else if (file.url) {
-        console.log('[BusinessAPI] Using media URL instead of buffer:', file.url);
-        fileMediaUrl = this.getPublicMediaUrl(file.url);
       }
     }
 
@@ -419,8 +511,12 @@ export default class BusinessAPIProvider extends BaseProvider {
           type: 'interactive',
           interactive: {
             type: 'button',
+            header: (mediaId || finalMediaUrl) ? {
+              type: 'image',
+              image: mediaId ? { id: mediaId } : { link: finalMediaUrl }
+            } : undefined,
             body: {
-              text: messageText
+              text: messageText || 'Please select an option'
             },
             action: {
               buttons: (buttonParams || []).map((btn, index) => ({
@@ -436,31 +532,33 @@ export default class BusinessAPIProvider extends BaseProvider {
       }
 
       if (interactiveType === 'list') {
+        const { header, body, footer, buttonTitle, items, sectionTitle } = listParams || {};
         whatsappPayload = {
           messaging_product: 'whatsapp',
+          recipient_type: 'individual',
           to: recipientNumber,
           type: 'interactive',
           interactive: {
             type: 'list',
-            header: {
+            header: header ? {
               type: 'text',
-              text: listParams?.header || 'Options'
-            },
+              text: header
+            } : undefined,
             body: {
-              text: messageText || listParams.body || 'Please select an option'
+              text: body || messageText || 'Please select an option'
             },
-            footer: listParams?.footer ? {
-              text: listParams.footer
+            footer: footer ? {
+              text: footer
             } : undefined,
             action: {
-              button: listParams?.buttonTitle || 'Select',
+              button: buttonTitle || 'Select',
               sections: [
                 {
-                  title: listParams?.sectionTitle || 'Menu',
-                  rows: (listParams?.items || []).map((item, index) => ({
-                    id: item.id || `item_${index}`,
-                    title: item.title || `Item ${index + 1}`,
-                    description: item.description || ''
+                  title: sectionTitle || 'Options',
+                  rows: (items || []).map(item => ({
+                    id: item.id,
+                    title: item.title,
+                    description: item.description
                   }))
                 }
               ]
@@ -568,7 +666,7 @@ export default class BusinessAPIProvider extends BaseProvider {
 
 
     let savedMessage = null;
-    if (!params.fromCampaignSystem) {
+    if (!params.fromCampaignSystem && messageType !== MESSAGE_TYPES.TYPING) {
       let contentToStore = messageText || null;
 
       if (messageType === MESSAGE_TYPES.LOCATION && locationParams) {
@@ -655,14 +753,22 @@ export default class BusinessAPIProvider extends BaseProvider {
       if (options.end_date) query.wa_timestamp.$lte = options.end_date;
     }
 
+    const page = options.page || 1;
+    const limit = options.limit || 30;
+    const skip = (page - 1) * limit;
+
     const messages = await Message.find(query)
-      .sort({ wa_timestamp: 1 })
+      .sort({ wa_timestamp: -1 })
+      .skip(skip)
+      .limit(limit)
       .populate({
         path: 'template_id'
       })
       .populate('submission_id')
       .populate('user_id', 'name')
       .lean();
+
+    const reversedMessages = messages.reverse();
 
     let canChat = true;
     if (contact) {
@@ -684,13 +790,23 @@ export default class BusinessAPIProvider extends BaseProvider {
       }
     }
 
-    const enrichedMessages = messages.map(message => ({
+    const total = await Message.countDocuments(query);
+
+    const enrichedMessages = reversedMessages.map(message => ({
       ...message,
       can_chat: canChat,
       contact_id: contact ? contact._id.toString() : null
     }));
 
-    return enrichedMessages;
+    return {
+      data: enrichedMessages,
+      pagination: {
+        total,
+        page,
+        limit,
+        hasMore: total > skip + messages.length
+      }
+    };
   }
 
   async getConnectionStatus(userId, connection = null) {
@@ -736,78 +852,110 @@ export default class BusinessAPIProvider extends BaseProvider {
     };
   }
 
-  async getRecentChats(userId, connection = null) {
+  async getRecentChats(userId, connection = null, options = {}) {
     if (!connection) {
       throw new Error('WhatsApp Business API connection not found');
     }
 
     const myPhoneNumber = connection.registred_phone_number;
+    const page = options.page || 1;
+    const limit = options.limit || 15;
+    const skip = (page - 1) * limit;
 
-    const sentMessages = await Message.distinct('recipient_number', {
-      sender_number: myPhoneNumber,
-      recipient_number: { $ne: null },
+    const matchQuery = {
+      $or: [
+        { sender_number: myPhoneNumber },
+        { recipient_number: myPhoneNumber }
+      ],
       deleted_at: null
-    });
+    };
 
-    const receivedMessages = await Message.distinct('sender_number', {
-      recipient_number: myPhoneNumber,
-      sender_number: { $ne: null },
-      deleted_at: null
-    });
+    if (options.assignedNumbers && Array.isArray(options.assignedNumbers) && options.assignedNumbers.length > 0) {
+      matchQuery.$or = [
+        { sender_number: myPhoneNumber, recipient_number: { $in: options.assignedNumbers } },
+        { recipient_number: myPhoneNumber, sender_number: { $in: options.assignedNumbers } }
+      ];
+    }
 
-    const allContactNumbers = [
-      ...new Set([
-        ...sentMessages.filter(Boolean),
-        ...receivedMessages.filter(Boolean)
-      ])
-    ].filter(number => number && number !== myPhoneNumber);
-
-    const recentChats = await Promise.all(
-      allContactNumbers.map(async (contactNumber) => {
-        const lastMessage = await Message.findOne({
-          $or: [
-            {
-              sender_number: myPhoneNumber,
-              recipient_number: contactNumber,
-              deleted_at: null
-            },
-            {
-              sender_number: contactNumber,
-              recipient_number: myPhoneNumber,
-              deleted_at: null
-            }
-          ]
-        })
-          .sort({ wa_timestamp: -1 })
-          .lean();
-
-        return {
-          contact: {
-            number: contactNumber,
-            name: contactNumber,
-            avatar: null
+    const result = await Message.aggregate([
+      { $match: matchQuery },
+      { $sort: { wa_timestamp: -1 } },
+      {
+        $group: {
+          _id: {
+            $cond: [
+              { $eq: ["$sender_number", myPhoneNumber] },
+              "$recipient_number",
+              "$sender_number"
+            ]
           },
-          lastMessage: lastMessage ? {
-            id: lastMessage._id.toString(),
-            content: lastMessage.content,
-            messageType: lastMessage.message_type,
-            fileUrl: lastMessage.file_url,
-            direction: lastMessage.direction,
-            fromMe: lastMessage.from_me,
-            createdAt: lastMessage.wa_timestamp,
-            is_seen: lastMessage.is_seen || false,
-            read_status: lastMessage.read_status || 'unread'
-          } : null
-        };
-      })
-    );
+          lastMessage: { $first: "$$ROOT" }
+        }
+      },
+      {
+        $lookup: {
+          from: 'contacts',
+          let: { contactNum: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$phone_number", "$$contactNum"] },
+                    { $eq: ["$created_by", new mongoose.Types.ObjectId(userId)] },
+                    { $eq: ["$deleted_at", null] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'contact'
+        }
+      },
+      { $unwind: "$contact" },
+      { $sort: { "lastMessage.wa_timestamp": -1 } },
+      {
+        $facet: {
+          metadata: [{ $count: "total" }],
+          data: [{ $skip: skip }, { $limit: limit }]
+        }
+      }
+    ]);
 
-    return recentChats.sort((a, b) => {
-      if (!a.lastMessage && !b.lastMessage) return 0;
-      if (!a.lastMessage) return 1;
-      if (!b.lastMessage) return -1;
-      return new Date(b.lastMessage.createdAt) - new Date(a.lastMessage.createdAt);
-    });
+    const chatsData = result[0].data;
+    const total = result[0].metadata[0]?.total || 0;
+
+    const formattedChats = chatsData.map(chat => ({
+      contact: {
+        id: chat.contact._id.toString(),
+        number: chat._id,
+        name: chat.contact.name || chat._id,
+        avatar: chat.contact.avatar || null,
+        chat_status: chat.contact.chat_status || 'open'
+      },
+      is_pinned: chat.contact.is_pinned || false,
+      lastMessage: chat.lastMessage ? {
+        id: chat.lastMessage._id.toString(),
+        content: chat.lastMessage.content,
+        messageType: chat.lastMessage.message_type,
+        fileUrl: chat.lastMessage.file_url,
+        direction: chat.lastMessage.direction,
+        fromMe: chat.lastMessage.from_me,
+        createdAt: chat.lastMessage.wa_timestamp,
+        is_seen: chat.lastMessage.is_seen || false,
+        read_status: chat.lastMessage.read_status || 'unread'
+      } : null
+    }));
+
+    return {
+      data: formattedChats,
+      pagination: {
+        total,
+        page,
+        limit,
+        hasMore: total > skip + chatsData.length
+      }
+    };
   }
 
   async disconnect(userId, connection = null) {

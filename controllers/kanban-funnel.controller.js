@@ -441,7 +441,7 @@ export const deleteFunnel = async (req, res) => {
     const funnel = await KanbanFunnel.findOneAndUpdate(
       { _id: id, userId, deletedAt: null },
       { $set: { deletedAt: new Date() } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!funnel) {
       return res.status(404).json({ success: false, message: 'Funnel not found' });

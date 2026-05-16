@@ -521,7 +521,7 @@ class WebRTCManager extends EventEmitter {
         outputQueues.set(waCallId, outputQueue);
 
         this.connections.set(waCallId, {
-            pc,
+            pc, 
             audioSource,
             phoneNumberId,
             agent,

@@ -7,9 +7,9 @@ import { uploadSingle } from '../utils/upload.js';
 const router = express.Router();
 
 router.get('/', pageController.getPages);
+router.get('/:id', pageController.getPageById);
 
 router.use(authenticate);
-router.get('/:id', checkPermission('view.pages'), pageController.getPageById);
 router.post('/create', uploadSingle('pages', 'meta_image'), checkPermission('create.pages'), pageController.createPage);
 router.put('/:id', uploadSingle('pages', 'meta_image'), checkPermission('update.pages'), pageController.updatePage);
 router.delete('/delete', checkPermission('delete.pages'), pageController.deletePages);

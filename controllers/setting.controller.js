@@ -2,7 +2,7 @@ import Stripe from 'stripe';
 import Razorpay from 'razorpay';
 import path from 'path';
 import nodemailer from 'nodemailer';
-import { Setting, Currency } from '../models/index.js';
+import { Setting, Currency, WhatsappWaba, Role, User, WhatsappPhoneNumber, Template } from '../models/index.js';
 import { updateEnvFile } from '../utils/env-file.js';
 import mongoose from 'mongoose';
 import { PayPalService } from '../utils/payment-gateway.service.js';
@@ -37,7 +37,14 @@ const getAllSettings = async (req, res) => {
     out.whatsapp_webhook_url = settings.whatsapp_webhook_url;
   }
 
-  out.whatsapp_verify_token = process.env.WHATSAPP_VERIFY_TOKEN || '';
+  if (settings.facebook_lead_webhook_url) {
+    out.facebook_lead_webhook_url = settings.facebook_lead_webhook_url;
+  }
+
+  out.whatsapp_otp_variable_mapping = settings.whatsapp_otp_variable_mapping || {};
+
+  out.webhook_verification_token = process.env.WHATSAPP_VERIFY_TOKEN || settings.webhook_verification_token || '';
+  out.facebook_lead_webhook_verify_token = process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN || settings.facebook_lead_webhook_verify_token || '';
   out.smtp_host = process.env.SMTP_HOST || '';
   out.smtp_port = process.env.SMTP_PORT || '';
   out.smtp_user = process.env.SMTP_USER || '';
@@ -50,6 +57,37 @@ const getAllSettings = async (req, res) => {
   out.google_redirect_uri = process.env.GOOGLE_REDIRECT_URI || '';
 
   out.google_redirect_uri = `${baseUrl.replace(/\/$/, '')}/api/google/callback`;
+
+  let isWabaConnected = false;
+  try {
+    const superAdminRoles = await Role.find({ name: 'super_admin' }).distinct('_id');
+    const adminUser = await User.findOne({ role_id: { $in: superAdminRoles }, deleted_at: null });
+
+    if (adminUser) {
+      const connection = await WhatsappWaba.findOne({
+        user_id: adminUser._id,
+        connection_status: { $in: ['connected', 'initial'] },
+        deleted_at: null
+      });
+
+      if (connection) {
+        isWabaConnected = true;
+        out.admin_waba_id = connection.whatsapp_business_account_id;
+        out.admin_waba_mongodb_id = connection._id;
+
+        const phoneNumber = await WhatsappPhoneNumber.findOne({
+          waba_id: connection._id,
+          is_active: true
+        });
+        if (phoneNumber) {
+          out.admin_whatsapp_phone_number_id = phoneNumber.phone_number_id;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error checking WABA connection status:', err);
+  }
+  out.is_waba_connected = isWabaConnected;
 
   delete out.stripe_secret_key;
   delete out.stripe_webhook_secret;
@@ -65,7 +103,7 @@ const getAllSettings = async (req, res) => {
   if (out.aws_access_key_id && out.aws_access_key_id.length > 8) {
     out.aws_access_key_id = out.aws_access_key_id.substring(0, 8) + '****';
   }
-  
+
   if (out.aws_secret_access_key) {
     out.aws_secret_access_key_set = true;
     delete out.aws_secret_access_key;
@@ -83,10 +121,16 @@ const getAllSettings = async (req, res) => {
     out.google_client_id = out.google_client_id.substring(0, 8) + '****';
   }
 
+  out.app_secret = process.env.app_secret || settings.app_secret || '';
+  if (out.app_secret && out.app_secret.length > 8) {
+    out.app_secret = out.app_secret.substring(0, 8) + '****';
+  }
+
   const client_ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   out.client_ip = client_ip?.replace('::ffff:', '') || '';
   out.maintenance_allowed_ips = settings.maintenance_allowed_ips || [];
-  out.whatsapp_phoneno_id = settings.whatsapp_phoneno_id || process.env.PHONENO_ID || '';
+  out.otp_delivery_method = settings.otp_delivery_method || 'email';
+  out.whatsapp_otp_template_id = settings.whatsapp_otp_template_id || null;
 
   res.status(200).json(out);
 };
@@ -94,8 +138,21 @@ const getAllSettings = async (req, res) => {
 const updateSetting = async (req, res) => {
   try {
     let setting = await Setting.findOne();
-    console.log("req.body" , req.body);
+    console.log("req.body", req.body);
     const processedBody = { ...req.body };
+
+    const maskedFields = [
+      'google_client_id', 'google_client_secret',
+      'aws_access_key_id', 'aws_secret_access_key',
+      'razorpay_key_id', 'paypal_client_id', 'stripe_publishable_key',
+      'app_secret'
+    ];
+
+    maskedFields.forEach(field => {
+      if (processedBody[field] && typeof processedBody[field] === 'string' && processedBody[field].endsWith('****')) {
+        delete processedBody[field];
+      }
+    });
 
     const logoFields = ['favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_light_logo_url', 'sidebar_dark_logo_url'];
 
@@ -118,8 +175,12 @@ const updateSetting = async (req, res) => {
 
     const envVars = {};
 
-    if (req.body.whatsapp_verify_token !== undefined) {
-      envVars.WHATSAPP_VERIFY_TOKEN = req.body.whatsapp_verify_token;
+    if (req.body.webhook_verification_token !== undefined && !req.body.webhook_verification_token.endsWith('****')) {
+      envVars.WHATSAPP_VERIFY_TOKEN = req.body.webhook_verification_token;
+    }
+
+    if (req.body.facebook_lead_webhook_verify_token !== undefined && !req.body.facebook_lead_webhook_verify_token.endsWith('****')) {
+      envVars.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN = req.body.facebook_lead_webhook_verify_token;
     }
 
     if (req.body.smtp_host !== undefined) {
@@ -144,30 +205,28 @@ const updateSetting = async (req, res) => {
       envVars.SUPPORT_EMAIL = req.body.support_email;
     }
 
-    if (req.body.whatsapp_phoneno_id !== undefined) {
-      envVars.PHONENO_ID = req.body.whatsapp_phoneno_id;
-      processedBody.whatsapp_phoneno_id = req.body.whatsapp_phoneno_id;
-    }
-
     if (req.body.maintenance_mode !== undefined) {
       envVars.MAINTENANCE_MODE = String(req.body.maintenance_mode);
       processedBody.maintenance_mode = req.body.maintenance_mode === true || req.body.maintenance_mode === 'true';
     }
 
-    if (req.body.google_client_id !== undefined) {
+    if (req.body.google_client_id !== undefined && !req.body.google_client_id.endsWith('****')) {
       envVars.GOOGLE_CLIENT_ID = req.body.google_client_id;
       processedBody.google_client_id = req.body.google_client_id;
     }
-    if (req.body.google_client_secret !== undefined) {
+    if (req.body.google_client_secret !== undefined && !req.body.google_client_secret.endsWith('****')) {
       envVars.GOOGLE_CLIENT_SECRET = req.body.google_client_secret;
       processedBody.google_client_secret = req.body.google_client_secret;
     }
 
-    if (req.body.aws_access_key_id !== undefined) {
+    if (req.body.aws_access_key_id !== undefined && !req.body.aws_access_key_id.endsWith('****')) {
       envVars.AWS_ACCESS_KEY_ID = req.body.aws_access_key_id;
     }
-    if (req.body.aws_secret_access_key !== undefined) {
+    if (req.body.aws_secret_access_key !== undefined && !req.body.aws_secret_access_key.endsWith('****')) {
       envVars.AWS_SECRET_ACCESS_KEY = req.body.aws_secret_access_key;
+    }
+    if (req.body.app_secret !== undefined && !req.body.app_secret.endsWith('****')) {
+      envVars.app_secret = req.body.app_secret;
     }
     if (req.body.aws_region !== undefined) {
       envVars.AWS_REGION = req.body.aws_region;
@@ -210,7 +269,7 @@ const updateSetting = async (req, res) => {
         processedBody.allowed_file_upload_types = req.body.allowed_file_upload_types;
       }
     }
-    
+
     if (req.body.storage_limit !== undefined) {
       processedBody.storage_limit = parseInt(req.body.storage_limit) || 100;
     }
@@ -236,6 +295,54 @@ const updateSetting = async (req, res) => {
       }
 
       processedBody.default_currency = req.body.default_currency;
+    }
+
+    if (req.body.otp_delivery_method === 'whatsapp' || (req.body.whatsapp_otp_template_id !== undefined && req.body.whatsapp_otp_template_id !== null)) {
+      const superAdminRoles = await Role.find({ name: 'super_admin' }).distinct('_id');
+      const admin = await User.findOne({ role_id: { $in: superAdminRoles }, deleted_at: null });
+
+      if (!admin) {
+        return res.status(400).json({
+          success: false,
+          message: "Super Admin account not found"
+        });
+      }
+
+      const connection = await WhatsappWaba.findOne({
+        user_id: admin._id,
+        connection_status: { $in: ['connected', 'initial'] },
+        deleted_at: null
+      });
+
+      if (!connection) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot configure WhatsApp OTP features. Please connect your WhatsApp WABA first in the tenant area."
+        });
+      }
+
+      if (req.body.whatsapp_otp_template_id) {
+        const template = await Template.findById(req.body.whatsapp_otp_template_id);
+        if (!template || template.category !== 'AUTHENTICATION') {
+          return res.status(400).json({
+            success: false,
+            message: "Only templates with the 'AUTHENTICATION' category can be used for OTP delivery."
+          });
+        }
+      }
+
+      processedBody.whatsapp_otp_template_id = req.body.whatsapp_otp_template_id;
+      processedBody.whatsapp_otp_variable_mapping = typeof req.body.whatsapp_otp_variable_mapping === 'string'
+        ? JSON.parse(req.body.whatsapp_otp_variable_mapping)
+        : req.body.whatsapp_otp_variable_mapping;
+    }
+
+    if (req.body.otp_delivery_method !== undefined) {
+      processedBody.otp_delivery_method = req.body.otp_delivery_method;
+    }
+
+    if (req.body.whatsapp_otp_template_id !== undefined) {
+      processedBody.whatsapp_otp_template_id = req.body.whatsapp_otp_template_id;
     }
 
     if (setting) {
@@ -358,7 +465,7 @@ const updateStripeSettings = async (req, res) => {
 
     const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
     const webhookUrl = `${baseUrl.replace(/\/$/, '')}/api/webhook/stripe`;
-    console.log("webhookUrl" , webhookUrl);
+    console.log("webhookUrl", webhookUrl);
 
     const stripe = new Stripe(stripe_secret_key.trim());
 

@@ -64,7 +64,6 @@ const facebookAdCampaignSchema = new mongoose.Schema(
 );
 
 facebookAdCampaignSchema.index({ user_id: 1, deleted_at: 1 });
-facebookAdCampaignSchema.index({ fb_campaign_id: 1 });
 
 facebookAdCampaignSchema.methods.softDelete = function () {
   this.deleted_at = new Date();

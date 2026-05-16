@@ -1,7 +1,7 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { User, Setting } from '../models/index.js';
+import { User, Setting, Subscription, Plan } from '../models/index.js';
 import AWSStorage from './aws-storage.js';
 
 const mimeToExtension = {
@@ -62,7 +62,7 @@ function ensureDirExists(dirPath) {
 const baseUploadDir = './uploads/';
 ensureDirExists(baseUploadDir);
 
-async function getDynamicSettings() {
+async function getDynamicSettings(req = null) {
   const setting = await Setting.findOne().select({
     allowed_file_upload_types: 1,
     document_file_limit: 1,
@@ -72,14 +72,38 @@ async function getDynamicSettings() {
     multiple_file_share_limit: 1
   }).lean();
 
+  let planFeatures = null;
+  if (req && req.user) {
+    const userId = req.user.owner_id || req.user.id;
+    const subscription = await Subscription.findOne({
+      user_id: userId,
+      status: { $in: ['active', 'trial'] },
+      deleted_at: null
+    }).lean();
+    if (subscription) {
+      if (subscription.is_custom) {
+        planFeatures = subscription.features;
+      } else if (subscription.plan_id) {
+        const plan = await Plan.findById(subscription.plan_id).select('features').lean();
+        if (plan && plan.features) {
+          planFeatures = plan.features;
+        } else if (subscription.features) {
+          planFeatures = subscription.features;
+        }
+      } else if (subscription.features) {
+        planFeatures = subscription.features;
+      }
+    }
+  }
+
   const allowedTypes = setting?.allowed_file_upload_types || [];
   const limits = {
-    document: (setting?.document_file_limit || 10) * 1024 * 1024,
-    audio: (setting?.audio_file_limit || 10) * 1024 * 1024,
-    video: (setting?.video_file_limit || 10) * 1024 * 1024,
-    image: (setting?.image_file_limit || 5) * 1024 * 1024,
+    document: ((planFeatures?.document_file_limit && planFeatures.document_file_limit > 0) ? planFeatures.document_file_limit : (setting?.document_file_limit || 10)) * 1024 * 1024,
+    audio: ((planFeatures?.audio_file_limit && planFeatures.audio_file_limit > 0) ? planFeatures.audio_file_limit : (setting?.audio_file_limit || 10)) * 1024 * 1024,
+    video: ((planFeatures?.video_file_limit && planFeatures.video_file_limit > 0) ? planFeatures.video_file_limit : (setting?.video_file_limit || 10)) * 1024 * 1024,
+    image: ((planFeatures?.image_file_limit && planFeatures.image_file_limit > 0) ? planFeatures.image_file_limit : (setting?.image_file_limit || 5)) * 1024 * 1024,
     file: 25 * 1024 * 1024,
-    multiple: setting?.multiple_file_share_limit || 10
+    multiple: planFeatures?.multiple_file_share_limit || setting?.multiple_file_share_limit || 10
   };
 
   return { allowedTypes, limits };
@@ -105,7 +129,7 @@ function createUploader(subfolder = '') {
 };
 
 const asyncFileFilter = async (req, file, cb) => {
-  const { allowedTypes } = await getDynamicSettings();
+  const { allowedTypes } = await getDynamicSettings(req);
   const ext = mimeToExtension[file.mimetype] || path.extname(file.originalname).slice(1).toLowerCase();
 
   if (allowedTypes.includes(ext)) cb(null, true);
@@ -147,7 +171,7 @@ const checkUserStorageLimit = async (req, files) => {
 function uploader(subfolder = '') {
   const dynamicMulter = async (req, res, next) => {
     try {
-      const { limits } = await getDynamicSettings();
+      const { limits } = await getDynamicSettings(req);
       const maxGlobalSize = Math.max(...Object.values(limits));
 
       req._dynamicUploader = multer({
@@ -164,7 +188,7 @@ function uploader(subfolder = '') {
   };
 
   const checkFileSizes = async (req, res, next) => {
-    const { limits } = await getDynamicSettings();
+    const { limits } = await getDynamicSettings(req);
     let files = [];
     if (req.file) files.push(req.file);
     if (req.files) {
@@ -238,7 +262,7 @@ function uploader(subfolder = '') {
                   }
                 } catch (awsErr) {
                   console.error("Failed to upload to S3, falling back to local storage:", awsErr);
-                  file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+                  file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
                   file.is_s3 = false;
                 }
               }
@@ -249,7 +273,7 @@ function uploader(subfolder = '') {
             }
           } else {
             for (const file of files) {
-              file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+              file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
             }
           }
           next();
@@ -278,7 +302,7 @@ function uploader(subfolder = '') {
 
 const uploadFiles = (subfolder = '', fieldName = 'files') => {
   return async (req, res, next) => {
-    const { limits } = await getDynamicSettings();
+    const { limits } = await getDynamicSettings(req);
     const storage = createUploader(subfolder);
 
     const upload = multer({
@@ -319,18 +343,18 @@ const uploadFiles = (subfolder = '', fieldName = 'files') => {
                 if (fs.existsSync(localPath) && subfolder !== 'imports') fs.unlinkSync(localPath);
               } catch (e) { 
                 console.error("S3 Upload failed, falling back to local storage", e); 
-                file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+                file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
                 file.is_s3 = false;
               }
             }
           } else {
             for (const file of req.files) {
-              file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+              file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
             }
           }
         } else {
           for (const file of req.files) {
-            file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+            file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
           }
         }
         next();
@@ -340,7 +364,7 @@ const uploadFiles = (subfolder = '', fieldName = 'files') => {
 
 const uploadSingle = (subfolder = '', fieldName = 'file', isStatus = false) => {
   return async (req, res, next) => {
-    const { limits } = await getDynamicSettings();
+    const { limits } = await getDynamicSettings(req);
     const storage = createUploader(subfolder);
 
     const MAX_STATUS_FILE_SIZE = 16 * 1024 * 1024;
@@ -397,14 +421,14 @@ const uploadSingle = (subfolder = '', fieldName = 'file', isStatus = false) => {
               if (fs.existsSync(localPath) && subfolder !== 'imports') fs.unlinkSync(localPath);
             } catch (e) { 
               console.error("S3 Upload failed, falling back to local storage", e); 
-              file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+              file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
               file.is_s3 = false;
             }
           } else {
-            file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+            file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
           }
         } else {
-          file.path = `/${file.destination}/${file.filename}`.replace(/\\/g, '/');
+          file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
         }
       }
 

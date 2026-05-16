@@ -61,7 +61,11 @@ const initializeQueueSystem = () => {
           timestamp: new Date().toISOString()
         });
 
-        const { userId, filepath, originalFilename } = job.data;
+        const { userId, filepath: rawFilepath, originalFilename } = job.data;
+        const filepath = rawFilepath.startsWith('/')
+          ? path.join(process.cwd(), rawFilepath)
+          : path.resolve(rawFilepath);
+
         let processedCount = 0;
         let errorCount = 0;
         const errors = [];
@@ -79,15 +83,26 @@ const initializeQueueSystem = () => {
 
           const results = [];
 
+          if (!fs.existsSync(filepath)) {
+            throw new Error(`Import file not found: ${filepath}. The file may have been lost during a server restart.`);
+          }
           const fileExt = path.extname(filepath).toLowerCase();
 
           if (fileExt === '.csv') {
             await new Promise((resolve, reject) => {
-              fs.createReadStream(filepath)
-                .pipe(csv())
+              const stream = fs.createReadStream(filepath);
+              stream.on('error', (err) => {
+                console.error('ReadStream error:', err);
+                reject(err);
+              });
+
+              stream.pipe(csv())
                 .on('data', (data) => results.push(data))
                 .on('end', resolve)
-                .on('error', reject);
+                .on('error', (err) => {
+                  console.error('CSV Parser error:', err);
+                  reject(err);
+                });
             });
           } else if (fileExt === '.xlsx' || fileExt === '.xls') {
 
@@ -222,7 +237,7 @@ const initializeQueueSystem = () => {
                 existingContact.updated_by = userId;
                 existingContact.status = status;
                 if (!existingContact.user_id) {
-                    existingContact.user_id = userId; 
+                  existingContact.user_id = userId;
                 }
                 await existingContact.save();
               } else {

@@ -213,17 +213,22 @@ const getLandingPage = async (req, res) => {
     const populatedLandingPage = await LandingPage.findById(landingPage._id)
       .populate({
         path: 'pricing_section.plans._id',
-        select: '_id name price features is_featured',
+        select: '_id name price features is_featured billing_cycle',
         populate: {
           path: 'currency taxes',
         }
       })
       .populate('testimonials_section.testimonials._id', '_id title description user_name user_post user_image status rating')
-      .populate('faq_section.faqs._id', '_id title description status');``
+      .populate('faq_section.faqs._id', '_id title description status'); ``
+
+    const setting = await Setting.findOne().lean();
 
     res.status(200).json({
       success: true,
-      data: populatedLandingPage
+      data: {
+        ...populatedLandingPage.toObject(),
+        landing_page_enabled: setting?.landing_page_enabled
+      }
     });
   } catch (error) {
     console.error('Error getting landing page:', error);
@@ -245,7 +250,8 @@ const updateLandingPage = async (req, res) => {
       testimonials_section,
       faq_section,
       contact_section,
-      footer_section
+      footer_section,
+      landing_page_enabled
     } = req.body;
 
     const updateData = {};
@@ -324,15 +330,27 @@ const updateLandingPage = async (req, res) => {
       await LandingPage.findByIdAndUpdate(landingPage._id, updateData, { returnDocument: 'after' });
     }
 
+    if (landing_page_enabled !== undefined) {
+      await Setting.findOneAndUpdate(
+        {},
+        { landing_page_enabled },
+        { upsert: true, returnDocument: 'after' }
+      );
+    }
     const updatedLandingPage = await LandingPage.findById(landingPage._id)
-      .populate('pricing_section.plans._id', '_id name price features is_featured')
+      .populate('pricing_section.plans._id', '_id name price features is_featured billing_cycle')
       .populate('testimonials_section.testimonials._id')
       .populate('faq_section.faqs._id');
+
+    const setting = await Setting.findOne().lean();
 
     res.status(200).json({
       success: true,
       message: 'Landing page updated successfully',
-      data: updatedLandingPage
+      data: {
+        ...updatedLandingPage.toObject(),
+        landing_page_enabled: setting?.landing_page_enabled
+      }
     });
   } catch (error) {
     console.error('Error updating landing page:', error);

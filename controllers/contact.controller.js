@@ -359,6 +359,7 @@ export const getContacts = async (req, res) => {
       status,
       assigned_to,
       tags,
+      is_unsubscribed,
       sort_by = 'created_at',
       sort_order = 'desc'
     } = req.query;
@@ -366,8 +367,47 @@ export const getContacts = async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const sortOrder = sort_order === 'asc' ? 1 : -1;
 
+    const isSuperAdmin = req.user.role === 'super_admin';
+    const userId = req.user.owner_id;
+
+    if (isSuperAdmin) {
+      const allUsers = await User.find({ deleted_at: null, _id: { $ne: userId } }).select('name email phone country_code').lean();
+
+      const existingContactPhones = await Contact.find({ user_id: userId, deleted_at: null }).distinct('phone_number');
+      const existingContactEmails = await Contact.find({ user_id: userId, deleted_at: null }).distinct('email');
+
+      const contactsToCreate = [];
+      for (const user of allUsers) {
+        const phone = user.phone;
+        const email = user.email;
+
+        const hasPhone = phone && existingContactPhones.includes(phone);
+        const hasEmail = email && existingContactEmails.includes(email);
+
+        if (!hasPhone && !hasEmail) {
+          contactsToCreate.push({
+            name: user.name || 'User',
+            email: email,
+            phone_number: phone,
+            user_id: userId,
+            created_by: userId,
+            source: 'whatsapp',
+            status: 'lead'
+          });
+        }
+      }
+
+      if (contactsToCreate.length > 0) {
+        await Contact.insertMany(contactsToCreate, { ordered: false }).catch(err => {
+          if (err.code !== 11000) console.error('Bulk sync error:', err);
+        });
+      }
+    }
+
+
     const query = {
       created_by: req.user.owner_id,
+      user_id: userId,
       deleted_at: null
     };
 
@@ -405,12 +445,21 @@ export const getContacts = async (req, res) => {
       const validTagIds = tagArray.filter(id => mongoose.Types.ObjectId.isValid(id));
       query.tags = { $in: validTagIds };
     }
+
+    if (is_unsubscribed !== undefined) {
+      query.is_unsubscribed = is_unsubscribed === 'true';
+    }
+
     console.log("query", query);
     const contacts = await Contact.find(query)
       .populate('assigned_to', 'name email')
       .populate({
         path: 'tags',
         select: '_id label color'
+      })
+      .populate({
+        path: 'segments',
+        select: '_id name'
       })
       .sort({ [sort_by]: sortOrder })
       .skip(skip)

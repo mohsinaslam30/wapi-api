@@ -159,7 +159,65 @@ const planSchema = new mongoose.Schema({
         segments: {
             type: Number,
             default: 0
+        },
+        workspaces: {
+            type: Number,
+            default: 0
+        },
+        facebook_lead: {
+            type: Number,
+            default: 0
+        },
+        document_file_limit: {
+            type: Number,
+            default: 0
+        },
+        audio_file_limit: {
+            type: Number,
+            default: 0
+        },
+        video_file_limit: {
+            type: Number,
+            default: 0
+        },
+        image_file_limit: {
+            type: Number,
+            default: 0
+        },
+        multiple_file_share_limit: {
+            type: Number,
+            default: 0
+        },
+        google_account: {
+            type: Number,
+            default: 0
+        },
+        quick_replies: {
+            type: Number,
+            default: 0
         }
+    },
+    enabled_features: {
+        contacts: { type: Boolean, default: false },
+        template_bots: { type: Boolean, default: false },
+        message_bots: { type: Boolean, default: false },
+        campaigns: { type: Boolean, default: false },
+        ai_prompts: { type: Boolean, default: false },
+        staff: { type: Boolean, default: false },
+        conversations: { type: Boolean, default: false },
+        bot_flow: { type: Boolean, default: false },
+        facebook_lead: { type: Boolean, default: false },
+        custom_fields: { type: Boolean, default: false },
+        tags: { type: Boolean, default: false },
+        teams: { type: Boolean, default: false },
+        forms: { type: Boolean, default: false },
+        whatsapp_calling: { type: Boolean, default: false },
+        appointment_bookings: { type: Boolean, default: false },
+        facebookAds_campaign: { type: Boolean, default: false },
+        kanban_funnels: { type: Boolean, default: false },
+        segments: { type: Boolean, default: false },
+        google_account: { type: Boolean, default: false },
+        quick_replies: { type: Boolean, default: false },
     },
     taxes: [{
         type: mongoose.Schema.Types.ObjectId,

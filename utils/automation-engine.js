@@ -1,4 +1,4 @@
-import { AutomationFlow, AutomationExecution, Contact, EcommerceOrder, Message, WhatsappPhoneNumber, Template, Tag, ContactTag, ChatAssignment, Chatbot } from '../models/index.js';
+import { AutomationFlow, AutomationExecution, Contact, EcommerceOrder, Message, WhatsappPhoneNumber, Template, Tag, ContactTag, ChatAssignment, Chatbot, ReplyMaterial } from '../models/index.js';
 import unifiedWhatsAppService from '../services/whatsapp/unified-whatsapp.service.js';
 import { getSheetsClient, getCalendarClient, handleGoogleApiError } from './google-api-helper.js';
 import { PROVIDER_TYPES } from '../services/whatsapp/unified-whatsapp.service.js';
@@ -261,7 +261,7 @@ class AutomationEngine {
 
       this.runningExecutions.set(executionId, execution._id);
 
-      const result = await this.processWorkflow(flow, execution, inputData);
+      const result = await this.processWorkflow(flow, execution, { ...inputData, flow_id: flow._id });
 
       if (result.status === 'waiting') {
         return result;
@@ -395,6 +395,8 @@ class AutomationEngine {
     let result = { success: false, output: {} };
 
     try {
+      console.log(`\x1b[36m[Flow Engine]\x1b[0m >>> Executing Node: "${node.name || node.id}" (Type: ${node.type})`);
+      
       const nodeLog = {
         node_id: node.id,
         node_type: node.type,
@@ -452,13 +454,19 @@ class AutomationEngine {
         case 'update_contact':
           result = await this.executeUpdateContactNode(node, inputData);
           break;
+        case 'add_to_segment':
+          result = await this.executeAddToSegmentNode(node, inputData);
+          break;
         case 'appointment_flow':
           result = await this.executeAppointmentFlowNode(node, flow, inputData, executionLog);
           break;
         case 'wait_for_reply':
           result = await this.executeWaitForReplyNode(node, flow, inputData, executionLog);
           break;
-      case 'response_saver':
+        case 'form_flow':
+          result = await this.executeFormFlowNode(node, inputData);
+          break;
+        case 'response_saver':
         result = await this.executeResponseSaverNode(node, inputData);
         break;
       case 'api':
@@ -477,6 +485,12 @@ class AutomationEngine {
       nodeLog.error = result.error || null;
 
       executionLog.push(nodeLog);
+      
+      if (result.success) {
+        console.log(`\x1b[32m[Flow Engine]\x1b[0m Node "${node.name || node.id}" \x1b[32mSUCCESS\x1b[0m. Output keys: ${Object.keys(result.output || {})}`);
+      } else {
+        console.error(`\x1b[31m[Flow Engine]\x1b[0m Node "${node.name || node.id}" \x1b[31mFAILED\x1b[0m. Error: ${result.error}`);
+      }
 
       return result;
     } catch (error) {
@@ -798,6 +812,79 @@ class AutomationEngine {
   }
 
 
+  async executeFormFlowNode(node, inputData) {
+    const {
+      form_id,
+      message_body,
+      button_text,
+      recipient,
+      provider_type
+    } = node.parameters || {};
+
+    if (!form_id) {
+      return { success: false, output: inputData, error: 'Form ID is required' };
+    }
+
+    try {
+      const userId = inputData.userId || inputData.user_id;
+      if (!userId) {
+        return { success: false, output: inputData, error: 'User ID is required' };
+      }
+
+      const rawRecipient = recipient || inputData.senderNumber || inputData.phone_number;
+      if (!rawRecipient) {
+        return { success: false, output: inputData, error: 'Recipient is required' };
+      }
+
+      const processedRecipient = this.processTemplateString(rawRecipient, inputData);
+      const processedBody = message_body ? this.processTemplateString(message_body, inputData) : 'Please fill out this form';
+      const processedButton = button_text ? this.processTemplateString(button_text, inputData) : 'Open Form';
+
+      const { Form } = await import('../models/index.js');
+      const form = await Form.findOne({ _id: form_id, user_id: userId, deleted_at: null });
+      
+      if (!form || !form.flow?.flow_id) {
+        return { success: false, output: inputData, error: 'Form not found or has no published Meta Flow' };
+      }
+
+      const messageParams = {
+        recipientNumber: processedRecipient,
+        messageType: 'interactive',
+        interactiveType: 'flow',
+        messageText: processedBody,
+        flowId: form.flow.flow_id,
+        flowToken: `flow_${Date.now()}`,
+        buttonText: processedButton,
+        providerType: provider_type || PROVIDER_TYPES.BUSINESS_API
+      };
+
+      if (inputData.whatsappPhoneNumberId) {
+        const whatsappPhoneNumber = await WhatsappPhoneNumber.findById(inputData.whatsappPhoneNumberId)
+          .populate('waba_id')
+          .lean();
+
+        if (whatsappPhoneNumber && whatsappPhoneNumber.waba_id) {
+          messageParams.whatsappPhoneNumber = whatsappPhoneNumber;
+        }
+      }
+
+      const result = await unifiedWhatsAppService.sendMessage(userId, messageParams);
+
+      return {
+        success: true,
+        output: {
+          ...inputData,
+          form_sent: true,
+          sent_to: processedRecipient,
+          message_id: result.messageId
+        }
+      };
+    } catch (error) {
+      return { success: false, output: inputData, error: error.message };
+    }
+  }
+
+
   async executeAIResponseNode(node, inputData) {
     const { ai_model, prompt_template, api_key } = node.parameters || {};
 
@@ -823,6 +910,7 @@ class AutomationEngine {
   async executeSendMessageNode(node, inputData) {
     const {
       recipient,
+      message_body,
       message_template,
       media_url,
       buttons,
@@ -835,11 +923,13 @@ class AutomationEngine {
     } = node.parameters || {};
 
     if (!recipient) {
+      console.error('[Send Message Node] Error: Recipient is missing');
       return { success: false, output: inputData, error: 'Recipient is required' };
     }
 
     try {
       const userId = inputData.userId || inputData.user_id;
+      console.log(`[Send Message Node] Sending to ${recipient} (User: ${userId})`);
       if (!userId) {
         console.error('No userId found in inputData:', inputData);
         return { success: false, output: inputData, error: 'User ID is required to send message' };
@@ -849,8 +939,14 @@ class AutomationEngine {
 
       const messageParams = {
         recipientNumber: processedRecipient,
+        replyType: node.parameters?.reply_material_id ? 'flow' : undefined,
+        replyId: node.parameters?.reply_material_id,
         providerType: provider_type || PROVIDER_TYPES.BUSINESS_API
       };
+
+      // Calculate flow prefix to match frontend trigger generation
+      const flowIdStr = inputData.flow_id?.toString() || '';
+      const flowPrefix = flowIdStr ? `f${flowIdStr.slice(-6)}` : '';
 
       if (messageType === 'location' && location_params) {
         messageParams.messageType = 'location';
@@ -861,12 +957,12 @@ class AutomationEngine {
           address: location_params.address || this.processTemplateString(location_params.address || '', inputData)
         };
       } else {
-        if (message_template) {
-          const processedMessage = this.processTemplateString(message_template, inputData);
+        if (message_body || message_template || node.parameters?.message || node.parameters?.bodyText) {
+          const rawMessage = message_body || message_template || node.parameters?.message || node.parameters?.bodyText;
+          const processedMessage = this.processTemplateString(rawMessage, inputData);
           messageParams.messageText = processedMessage;
         }
       }
-      console.log("media_url" , media_url)
       if (media_url) {
         messageParams.mediaUrl = media_url;
         messageParams.file = {
@@ -882,32 +978,44 @@ class AutomationEngine {
         messageParams.interactiveType = interactive_type;
 
         if (interactive_type === 'button' && button_params) {
-          messageParams.buttonParams = button_params.map(btn => ({
-            title: this.processTemplateString(btn.title, inputData),
-            id: this.processTemplateString(btn.id, inputData)
-          }));
+          messageParams.buttonParams = button_params.map((btn, index) => {
+            const rawId = btn.id || `btn_${index + 1}`;
+            const id = flowPrefix ? `${flowPrefix}___${rawId}` : rawId;
+            return {
+              title: this.processTemplateString(btn.title, inputData),
+              id: id
+            };
+          });
         } else if (interactive_type === 'list' && list_params) {
           messageParams.listParams = {
             header: this.processTemplateString(list_params.header || '', inputData),
-            body: this.processTemplateString(list_params.body || message_template || '', inputData),
+            body: this.processTemplateString(list_params.body || message_template || node.parameters?.message || node.parameters?.bodyText || '', inputData),
             footer: this.processTemplateString(list_params.footer || '', inputData),
             buttonTitle: this.processTemplateString(list_params.buttonTitle || 'Select', inputData),
             sectionTitle: this.processTemplateString(list_params.sectionTitle || 'Options', inputData),
-            items: (list_params.items || []).map(item => ({
-              title: this.processTemplateString(item.title, inputData),
-              description: this.processTemplateString(item.description || '', inputData),
-              id: this.processTemplateString(item.id || item.title, inputData)
-            }))
+            items: (list_params.items || []).map((item, index) => {
+              const rawId = item.id || item.title || `item_${index + 1}`;
+              const id = flowPrefix ? `${flowPrefix}___${rawId}` : rawId;
+              return {
+                title: this.processTemplateString(item.title, inputData),
+                description: this.processTemplateString(item.description || '', inputData),
+                id: id
+              };
+            })
           };
         }
       } else if (buttons && Array.isArray(buttons) && buttons.length > 0 && buttons.length <= 3) {
         messageParams.buttons = buttons;
         messageParams.messageType = 'interactive';
         messageParams.interactiveType = 'button';
-        messageParams.buttonParams = buttons.map(btn => ({
-          id: btn.id,
-          title: btn.text
-        }));
+        messageParams.buttonParams = buttons.map((btn, index) => {
+          const rawId = btn.value || btn.id || `btn_${index + 1}`;
+          const id = flowPrefix ? `${flowPrefix}___${rawId}` : rawId;
+          return {
+            id: id,
+            title: this.processTemplateString(btn.text || btn.title || '', inputData)
+          };
+        });
       } else {
         if (messageParams.file) {
           const mime = messageParams.file.mimetype;
@@ -1174,20 +1282,35 @@ class AutomationEngine {
       return { success: false, output: inputData, error: 'contactId is required to update contact' };
     }
 
-    const resolvedUpdates = {};
-    for (const [key, value] of Object.entries(updates || {})) {
-      if (typeof value === 'string') {
-        resolvedUpdates[key] = this.processTemplateString(value, inputData);
-      } else {
-        resolvedUpdates[key] = value;
-      }
-    }
-
     try {
-      await Contact.updateOne(
-        { _id: contactId, created_by: userId, deleted_at: null },
-        { $set: resolvedUpdates }
-      );
+      const { Contact } = await import('../models/index.js');
+      const standardFields = ['name', 'email', 'phone_number', 'status', 'source'];
+      const fieldUpdates = {};
+      const customFieldUpdates = {};
+
+      if (Array.isArray(updates)) {
+        for (const update of updates) {
+          const { field_key, value } = update;
+          if (!field_key) continue;
+
+          const resolvedValue = typeof value === 'string' ? this.processTemplateString(value, inputData) : value;
+
+          if (standardFields.includes(field_key)) {
+            fieldUpdates[field_key] = resolvedValue;
+          } else {
+            customFieldUpdates[`custom_fields.${field_key}`] = resolvedValue;
+          }
+        }
+      }
+
+      const finalUpdates = { ...fieldUpdates, ...customFieldUpdates };
+
+      if (Object.keys(finalUpdates).length > 0) {
+        await Contact.updateOne(
+          { _id: contactId, created_by: userId, deleted_at: null },
+          { $set: finalUpdates }
+        );
+      }
 
       const updatedContact = await Contact.findOne({
         _id: contactId,
@@ -1201,11 +1324,55 @@ class AutomationEngine {
           ...inputData,
           contact: updatedContact,
           contactId: updatedContact?._id?.toString() || contactId,
-          contact_updated: resolvedUpdates
+          contact_updated: finalUpdates
         }
       };
     } catch (err) {
+      console.error(`[Update Contact] Error:`, err);
       return { success: false, output: inputData, error: err.message };
+    }
+  }
+
+  async executeAddToSegmentNode(node, inputData) {
+    const { segment_id } = node.parameters || {};
+    const contactId = inputData.contactId || inputData.contact?._id;
+    const userId = inputData.userId || inputData.user_id;
+
+    if (!segment_id) {
+      return { success: false, output: inputData, error: 'segment_id is required' };
+    }
+    if (!contactId) {
+      return { success: false, output: inputData, error: 'contactId is required' };
+    }
+
+    try {
+      const { Segment, Contact } = await import('../models/index.js');
+      const segment = await Segment.findOne({ _id: segment_id, user_id: userId, deleted_at: null });
+
+      if (!segment) {
+        return { success: false, output: inputData, error: 'Segment not found' };
+      }
+
+      await Contact.findByIdAndUpdate(contactId, {
+        $addToSet: { segments: segment._id }
+      });
+
+      const count = await Contact.countDocuments({
+        segments: segment._id,
+        deleted_at: null
+      });
+      await Segment.findByIdAndUpdate(segment._id, { member_count: count });
+
+      return {
+        success: true,
+        output: {
+          ...inputData,
+          last_segment_added: segment.name
+        }
+      };
+    } catch (error) {
+      console.error(`[Add to Segment] Error:`, error);
+      return { success: false, output: inputData, error: error.message };
     }
   }
 
@@ -1280,6 +1447,7 @@ class AutomationEngine {
     const { url, method, headers, body, response_mapping } = node.parameters || {};
 
     if (!url) {
+      console.error('[API Node] Error: URL is missing');
       return { success: false, output: inputData, error: 'API URL is required' };
     }
 
@@ -1287,6 +1455,8 @@ class AutomationEngine {
       const processedUrl = this.processTemplateString(url, inputData);
       const processedHeaders = this.processHeaders(headers || {}, inputData);
       const processedBody = body ? this.processTemplateString(JSON.stringify(body), inputData) : null;
+
+      console.log(`[API Node] ${method || 'GET'} Request to: ${processedUrl}`);
 
       const response = await fetch(processedUrl, {
         method: method || 'GET',
@@ -1296,6 +1466,8 @@ class AutomationEngine {
 
       const responseText = await response.text();
       const apiResponse = this.isJsonString(responseText) ? JSON.parse(responseText) : responseText;
+
+      console.log(`[API Node] Response Status: ${response.status} (${response.ok ? 'OK' : 'FAIL'})`);
 
       const userId = inputData.userId || inputData.user_id;
       const contactId = inputData.contactId || inputData.contact?._id;
@@ -1344,9 +1516,11 @@ class AutomationEngine {
           contactId: updatedContact?._id?.toString() || contactId,
           api_status: response.status,
           api_response: apiResponse
-        }
+        },
+        ...(!response.ok ? { error: `API returned ${response.status}: ${typeof apiResponse === 'object' ? JSON.stringify(apiResponse) : apiResponse}` } : {})
       };
     } catch (error) {
+      console.error(`[API Node] Runtime Error: ${error.message}`);
       return { success: false, output: inputData, error: error.message };
     }
   }
@@ -1460,7 +1634,8 @@ class AutomationEngine {
       ...execution.input_data,
       [variableName]: messageText,
       last_message: messageText,
-      messagePayload
+      messagePayload,
+      flow_id: flow._id
     };
 
     await AutomationExecution.findByIdAndUpdate(execution._id, {

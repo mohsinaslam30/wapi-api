@@ -7,52 +7,73 @@ import { Setting } from '../models/index.js';
 let cachedStripe = null;
 let cachedStripeKey = null;
 
-function getStripeInstance() {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) return null;
-  if (cachedStripe && cachedStripeKey === key) return cachedStripe;
-  cachedStripeKey = key;
-  cachedStripe = new Stripe(key);
-  return cachedStripe;
+async function getStripeInstance() {
+    const setting = await Setting.findOne().lean();
+    const key = setting?.stripe_secret_key || process.env.STRIPE_SECRET_KEY;
+    
+    if (!key || key.includes('_your_')) return null;
+    
+    if (cachedStripe && cachedStripeKey === key) return cachedStripe;
+    
+    cachedStripeKey = key;
+    cachedStripe = new Stripe(key);
+    return cachedStripe;
 }
 
+// Proxy for backward compatibility where sync access is needed
 const stripe = new Proxy({}, {
-  get(_, prop) {
-    const s = getStripeInstance();
-    if (!s) return undefined;
-    return s[prop];
-  }
+    get(_, prop) {
+        if (!cachedStripe) {
+            // This is a bit of a hack since we can't await in a proxy getter easily
+            // Most of the app should use the Service methods which are async
+            const key = process.env.STRIPE_SECRET_KEY;
+            if (key && !key.includes('_your_')) {
+                cachedStripeKey = key;
+                cachedStripe = new Stripe(key);
+            }
+        }
+        return cachedStripe ? cachedStripe[prop] : undefined;
+    }
 });
 
-export function getStripe() {
-  return getStripeInstance();
+export async function getStripe() {
+    return await getStripeInstance();
 }
 
 let cachedRazorpay = null;
 let cachedRazorpayKey = null;
 
-function getRazorpayInstance() {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret) return null;
-  const key = `${keyId}:${keySecret}`;
-  if (cachedRazorpay && cachedRazorpayKey === key) return cachedRazorpay;
-  cachedRazorpayKey = key;
-  cachedRazorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
-  console.log("cachedRazorpay" , cachedRazorpay)
-  return cachedRazorpay;
+async function getRazorpayInstance() {
+    const setting = await Setting.findOne().lean();
+    const keyId = setting?.razorpay_key_id || process.env.RAZORPAY_KEY_ID;
+    const keySecret = setting?.razorpay_key_secret || process.env.RAZORPAY_KEY_SECRET;
+
+    if (!keyId || !keySecret || keyId.includes('_your_')) return null;
+    
+    const key = `${keyId}:${keySecret}`;
+    if (cachedRazorpay && cachedRazorpayKey === key) return cachedRazorpay;
+    
+    cachedRazorpayKey = key;
+    cachedRazorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    return cachedRazorpay;
 }
 
 const razorpay = new Proxy({}, {
-  get(_, prop) {
-    const r = getRazorpayInstance();
-    if (!r) return undefined;
-    return r[prop];
-  }
+    get(_, prop) {
+        if (!cachedRazorpay) {
+            const keyId = process.env.RAZORPAY_KEY_ID;
+            const keySecret = process.env.RAZORPAY_KEY_SECRET;
+            if (keyId && keySecret && !keyId.includes('_your_')) {
+                cachedRazorpayKey = `${keyId}:${keySecret}`;
+                cachedRazorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
+            }
+        }
+        return cachedRazorpay ? cachedRazorpay[prop] : undefined;
+    }
 });
 
-export function getRazorpay() {
-  return getRazorpayInstance();
+export async function getRazorpay() {
+    return await getRazorpayInstance();
 }
 
 const getStripeErrorMessage = (error, fallback) =>
@@ -92,9 +113,11 @@ export const calculatePeriodEnd = (startDate, billingCycle, duration = 1) => {
 export const StripeService = {
 
     async createOrGetCustomer(user) {
+        const stripeInstance = await getStripeInstance();
+        if (!stripeInstance) throw new Error('Stripe is not configured');
         try {
             if (user.stripe_customer_id) {
-                const customer = await stripe.customers.retrieve(user.stripe_customer_id);
+                const customer = await stripeInstance.customers.retrieve(user.stripe_customer_id);
                 if (!customer.deleted) {
                     return customer;
                 }
@@ -318,7 +341,8 @@ export const StripeService = {
 
     async createProductPriceAndPaymentLink(plan) {
         try {
-            if (!process.env.STRIPE_SECRET_KEY) return null;
+            const stripeInstance = await getStripeInstance();
+            if (!stripeInstance) return null;
 
             const product = await this.createProduct(
                 plan.name,
@@ -494,6 +518,8 @@ export const RazorpayService = {
     },
 
     async createPlan(plan) {
+        const rz = await getRazorpayInstance();
+        if (!rz) return null;
         try {
             const currencyValue = plan.currency?.code || plan.currency || 'INR';
             const currency = currencyValue.toString().toUpperCase();
@@ -511,7 +537,7 @@ export const RazorpayService = {
 
             const notes = { plan_id: plan._id?.toString() || '' };
 
-            const created = await razorpay.plans.create({
+            const created = await rz.plans.create({
                 period,
                 interval,
                 item,

@@ -168,6 +168,10 @@ const CampaignSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  avoid_unsubscribers: {
+    type: Boolean,
+    default: true
+  },
   scheduled_at: {
     type: Date,
     default: null

@@ -112,7 +112,8 @@ export const getSubmissionsByFormId = async (req, res) => {
                     phone: sub.meta?.phone_number || "Unknown"
                 },
                 preview: preview || "No additional data",
-                status: sub.status
+                status: sub.status,
+                submitted_at: sub.submitted_at
             };
         });
 

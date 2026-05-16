@@ -119,6 +119,11 @@ const contactSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {}
   },
+  is_unsubscribed: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
   deleted_at: {
     type: Date,
     default: null

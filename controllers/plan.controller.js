@@ -22,6 +22,97 @@ const ALLOWED_SORT_FIELDS = [
     'updated_at'
 ];
 
+const _syncPlanInternal = async (plan, force = false) => {
+    if (plan.price <= 0) {
+        console.log(`[SyncPlans] Skipping gateway sync for free plan: ${plan.slug}`);
+        return false;
+    }
+
+    // Ensure currency and taxes are populated for price calculation
+    if (!plan.populated('currency') || !plan.populated('taxes')) {
+        await plan.populate(['currency', 'taxes']);
+    }
+
+    const calculateTotalPrice = (p) => {
+        let total = p.price;
+        if (p.taxes && p.taxes.length > 0) {
+            const totalTaxRate = p.taxes.reduce((sum, tax) => sum + (tax.rate || 0), 0);
+            total = total * (1 + totalTaxRate / 100);
+        }
+        return total;
+    };
+
+    const planWithTotal = {
+        ...plan.toObject(),
+        price: calculateTotalPrice(plan)
+    };
+
+    const setting = await Setting.findOne().lean();
+    let updated = false;
+
+    // Sync with Stripe
+    if (setting?.is_stripe_active && (force || !plan.stripe_product_id || !plan.stripe_payment_link_url)) {
+        try {
+            console.log(`[SyncPlans] Syncing ${plan.slug} with Stripe...`);
+            let stripeData;
+            if (force || !plan.stripe_product_id) {
+                stripeData = await StripeService.createProductPriceAndPaymentLink(planWithTotal);
+            } else if (!plan.stripe_payment_link_url) {
+                stripeData = await StripeService.createPriceAndPaymentLinkForExistingProduct(planWithTotal, plan.stripe_product_id);
+            }
+
+            if (stripeData) {
+                if (stripeData.productId) plan.stripe_product_id = stripeData.productId;
+                if (stripeData.priceId) plan.stripe_price_id = stripeData.priceId;
+                if (stripeData.paymentLinkId) plan.stripe_payment_link_id = stripeData.paymentLinkId;
+                if (stripeData.paymentLinkUrl) plan.stripe_payment_link_url = stripeData.paymentLinkUrl;
+                updated = true;
+                console.log(`[SyncPlans] Stripe sync successful for ${plan.slug}`);
+            }
+        } catch (err) {
+            console.warn(`[SyncPlans] Stripe sync error for plan ${plan.slug}:`, err.message);
+        }
+    }
+
+    // Sync with Razorpay
+    if (setting?.is_razorpay_active && (force || !plan.razorpay_plan_id)) {
+        try {
+            console.log(`[SyncPlans] Syncing ${plan.slug} with Razorpay...`);
+            const razorpayData = await RazorpayService.createPlan(planWithTotal);
+            if (razorpayData && razorpayData.id) {
+                plan.razorpay_plan_id = razorpayData.id;
+                updated = true;
+                console.log(`[SyncPlans] Razorpay sync successful for ${plan.slug}`);
+            }
+        } catch (err) {
+            console.warn(`[SyncPlans] Razorpay sync error for plan ${plan.slug}:`, err.message);
+        }
+    }
+
+    // Sync with PayPal
+    if (setting?.is_paypal_active && (force || !plan.paypal_plan_id)) {
+        try {
+            console.log(`[SyncPlans] Syncing ${plan.slug} with PayPal...`);
+            const productData = await PayPalService.createProduct(planWithTotal);
+            if (productData && productData.id) {
+                const paypalPlanData = await PayPalService.createPlan(planWithTotal, productData.id);
+                if (paypalPlanData && paypalPlanData.id) {
+                    plan.paypal_plan_id = paypalPlanData.id;
+                    updated = true;
+                    console.log(`[SyncPlans] PayPal sync successful for ${plan.slug}`);
+                }
+            }
+        } catch (err) {
+            console.warn(`[SyncPlans] PayPal sync error for plan ${plan.slug}:`, err.message);
+        }
+    }
+
+    if (updated) {
+        await plan.save();
+    }
+    return updated;
+};
+
 const SORT_ORDER = {
     ASC: 1,
     DESC: -1
@@ -85,7 +176,7 @@ const generateSlug = (name) => {
 
 
 const validatePlanData = (data) => {
-    const { name, price, billing_cycle, features } = data;
+    const { name, price, billing_cycle, features } = data || {};
     const errors = [];
 
     if (!name || name.trim() === '') {
@@ -108,7 +199,10 @@ const validatePlanData = (data) => {
             'ai_prompts', 'staff', 'conversations',
             'bot_flow', 'broadcast_messages', 'custom_fields', 'tags',
             'forms', 'whatsapp_calling', 'teams', 'appointment_bookings',
-            'facebookAds_campaign', 'kanban_funnels', 'segments'
+            'facebookAds_campaign', 'kanban_funnels', 'segments', 'workspaces', 'facebook_lead',
+            'document_file_limit', 'audio_file_limit', 'video_file_limit',
+            'image_file_limit', 'multiple_file_share_limit',
+            'google_accounts', 'quick_replies', 'facebook_leads'
         ];
 
         numericFeatures.forEach(feature => {
@@ -126,6 +220,14 @@ const validatePlanData = (data) => {
         booleanFeatures.forEach(feature => {
             if (features[feature] !== undefined && typeof features[feature] !== 'boolean') {
                 errors.push(`${feature} must be a boolean value`);
+            }
+        });
+    }
+
+    if (data.enabled_features) {
+        Object.keys(data.enabled_features).forEach(feature => {
+            if (typeof data.enabled_features[feature] !== 'boolean') {
+                errors.push(`Enabled feature ${feature} must be a boolean value`);
             }
         });
     }
@@ -281,7 +383,7 @@ export const getPlanById = async (req, res) => {
 
 export const createPlan = async (req, res) => {
     try {
-        const planData = req.body;
+        const planData = req.body || {};
 
         const validation = validatePlanData(planData);
 
@@ -319,78 +421,20 @@ export const createPlan = async (req, res) => {
             is_active: planData.is_active !== undefined ? planData.is_active : true,
             sort_order: planData.sort_order || 0,
             features: planData.features || {},
+            enabled_features: planData.enabled_features || {},
             taxes: planData.taxes || [],
             razorpay_plan_id: planData.razorpay_plan_id?.trim() || null
         });
 
         await newPlan.populate(['currency', 'taxes']);
 
-        const calculateTotalPrice = (plan) => {
-            let total = plan.price;
-            if (plan.taxes && plan.taxes.length > 0) {
-                const totalTaxRate = plan.taxes.reduce((sum, tax) => sum + (tax.rate || 0), 0);
-                total = total * (1 + totalTaxRate / 100);
-            }
-            return total;
-        };
-
-        const planWithTotal = {
-            ...newPlan.toObject(),
-            price: calculateTotalPrice(newPlan)
-        };
-
-        let warnings = [];
-
-        try {
-            const stripeResult = await StripeService.createProductPriceAndPaymentLink(planWithTotal);
-            if (stripeResult) {
-                newPlan.stripe_product_id = stripeResult.productId;
-                newPlan.stripe_price_id = stripeResult.priceId;
-                newPlan.stripe_payment_link_id = stripeResult.paymentLinkId;
-                newPlan.stripe_payment_link_url = stripeResult.paymentLinkUrl;
-            } else if (process.env.STRIPE_SECRET_KEY) {
-                warnings.push('Stripe plan creation failed');
-            }
-        } catch (stripeErr) {
-            console.error('Error creating Stripe plan (plan created without Stripe):', stripeErr);
-            warnings.push(`Stripe plan creation failed: ${stripeErr.message}`);
-        }
-
-        if (getRazorpay()) {
-            try {
-                const razorpayPlan = await RazorpayService.createPlan(planWithTotal);
-                if (razorpayPlan && razorpayPlan.id) {
-                    newPlan.razorpay_plan_id = razorpayPlan.id;
-                }
-            } catch (razorpayErr) {
-                console.error('Error creating Razorpay plan (plan created without Razorpay):', razorpayErr);
-                warnings.push(`Razorpay plan creation failed: ${razorpayErr.message}`);
-            }
-        }
-
-        try {
-            const paypalProduct = await PayPalService.createProduct(planWithTotal);
-            if (paypalProduct && paypalProduct.id) {
-                const paypalPlan = await PayPalService.createPlan(planWithTotal, paypalProduct.id);
-                if (paypalPlan && paypalPlan.id) {
-                    newPlan.paypal_plan_id = paypalPlan.id;
-                }
-            }
-        } catch (paypalErr) {
-            console.error('Error creating PayPal plan (plan created without PayPal):', paypalErr);
-            warnings.push(`PayPal plan creation failed: ${paypalErr.message}`);
-        }
-
         await newPlan.save();
 
-        let responseMessage = 'Plan created successfully';
-        if (warnings.length > 0) {
-            responseMessage += `. Warnings: ${warnings.join(', ')}`;
-        }
+        await _syncPlanInternal(newPlan, true);
 
         return res.status(201).json({
             success: true,
-            message: responseMessage,
+            message: 'Plan created successfully',
             data: newPlan
         });
     } catch (error) {
@@ -407,7 +451,7 @@ export const createPlan = async (req, res) => {
 export const updatePlan = async (req, res) => {
     try {
         const { id } = req.params;
-        const planData = req.body;
+        const planData = req.body || {};
 
         if (!id || !mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({
@@ -478,6 +522,10 @@ export const updatePlan = async (req, res) => {
             existingPlan.features = { ...existingPlan.features, ...planData.features };
         }
 
+        if (planData.enabled_features) {
+            existingPlan.enabled_features = { ...existingPlan.enabled_features, ...planData.enabled_features };
+        }
+
         if (planData.stripe_price_id !== undefined) {
             existingPlan.stripe_price_id = planData.stripe_price_id?.trim() || null;
         }
@@ -495,101 +543,15 @@ export const updatePlan = async (req, res) => {
             existingPlan.taxes = planData.taxes;
         }
 
-        let warnings = [];
-
-        const taxesChanged = planData.taxes !== undefined;
-        stripePricingChanged = priceChanged || currencyChanged || billingCycleChanged || taxesChanged;
-        razorpayPricingChanged = priceChanged || currencyChanged || billingCycleChanged || taxesChanged;
-
-        if (stripePricingChanged && existingPlan.stripe_product_id && process.env.STRIPE_SECRET_KEY) {
-            await existingPlan.populate(['currency', 'taxes']);
-
-            const calculateTotalPrice = (plan) => {
-                let total = plan.price;
-                if (plan.taxes && plan.taxes.length > 0) {
-                    const totalTaxRate = plan.taxes.reduce((sum, tax) => sum + (tax.rate || 0), 0);
-                    total = total * (1 + totalTaxRate / 100);
-                }
-                return total;
-            };
-
-            const planWithTotal = {
-                ...existingPlan.toObject(),
-                price: calculateTotalPrice(existingPlan)
-            };
-
-            try {
-                const stripeResult = await StripeService.createPriceAndPaymentLinkForExistingProduct(
-                    planWithTotal,
-                    existingPlan.stripe_product_id
-                );
-                if (stripeResult) {
-                    existingPlan.stripe_price_id = stripeResult.priceId;
-                    existingPlan.stripe_payment_link_id = stripeResult.paymentLinkId;
-                    existingPlan.stripe_payment_link_url = stripeResult.paymentLinkUrl;
-                } else {
-                    warnings.push('Stripe plan update failed');
-                }
-            } catch (stripeErr) {
-                console.error('Error updating Stripe plan (plan updated without Stripe):', stripeErr);
-                warnings.push(`Stripe plan update failed: ${stripeErr.message}`);
-            }
-        }
-
-        if (razorpayPricingChanged && getRazorpay()) {
-            await existingPlan.populate(['currency', 'taxes']);
-
-            const calculateTotalPrice = (plan) => {
-                let total = plan.price;
-                if (plan.taxes && plan.taxes.length > 0) {
-                    const totalTaxRate = plan.taxes.reduce((sum, tax) => sum + (tax.rate || 0), 0);
-                    total = total * (1 + totalTaxRate / 100);
-                }
-                return total;
-            };
-
-            const planWithTotal = {
-                ...existingPlan.toObject(),
-                price: calculateTotalPrice(existingPlan)
-            };
-
-            try {
-                const razorpayPlan = await RazorpayService.createPlan(planWithTotal);
-                if (razorpayPlan && razorpayPlan.id) {
-                    existingPlan.razorpay_plan_id = razorpayPlan.id;
-                }
-            } catch (razorpayErr) {
-                console.error('Error creating new Razorpay plan on update:', razorpayErr);
-                warnings.push(`Razorpay plan update failed: ${razorpayErr.message}`);
-            }
-        }
-
-        const paypalPricingChanged = priceChanged || currencyChanged || billingCycleChanged || taxesChanged;
-        if (paypalPricingChanged) {
-            try {
-                const paypalProduct = await PayPalService.createProduct(planWithTotal);
-                if (paypalProduct && paypalProduct.id) {
-                    const paypalPlan = await PayPalService.createPlan(planWithTotal, paypalProduct.id);
-                    if (paypalPlan && paypalPlan.id) {
-                        existingPlan.paypal_plan_id = paypalPlan.id;
-                    }
-                }
-            } catch (paypalErr) {
-                console.error('Error updating PayPal plan:', paypalErr);
-                warnings.push(`PayPal plan update failed: ${paypalErr.message}`);
-            }
-        }
-
         await existingPlan.save();
 
-        let responseMessage = 'Plan updated successfully';
-        if (warnings.length > 0) {
-            responseMessage += `. Warnings: ${warnings.join(', ')}`;
+        if (stripePricingChanged || razorpayPricingChanged || paypalPricingChanged) {
+            await _syncPlanInternal(existingPlan, true);
         }
 
         return res.status(200).json({
             success: true,
-            message: responseMessage,
+            message: 'Plan updated successfully',
             data: existingPlan
         });
     } catch (error) {
@@ -606,7 +568,7 @@ export const updatePlan = async (req, res) => {
 export const updatePlanStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const { is_active } = req.body;
+        const { is_active } = req.body || {};
 
         if (!id || !mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({
@@ -654,7 +616,7 @@ export const updatePlanStatus = async (req, res) => {
 
 export const deletePlan = async (req, res) => {
     try {
-        const { ids } = req.body;
+        const { ids } = req.body || {};
 
         const validation = validateAndFilterIds(ids);
         if (!validation.isValid) {
@@ -783,94 +745,30 @@ export const getFeaturedPlans = async (req, res) => {
 
 export const syncPlansToGateways = async (req, res) => {
     try {
-        const plans = await Plan.find({ deleted_at: null, is_active: true }).populate(['currency', 'taxes']);
-        const setting = await Setting.findOne().lean();
+        const { id, force } = req.body || {};
+        let plans = [];
 
-        const results = {
-            processed: 0,
-            stripe: { synced: 0, failed: 0 },
-            razorpay: { synced: 0, failed: 0 },
-            paypal: { synced: 0, failed: 0 }
-        };
-
-        const calculateTotalPrice = (plan) => {
-            let total = plan.price;
-            if (plan.taxes && plan.taxes.length > 0) {
-                const totalTaxRate = plan.taxes.reduce((sum, tax) => sum + (tax.rate || 0), 0);
-                total = total * (1 + totalTaxRate / 100);
+        if (id) {
+            const plan = await Plan.findById(id).populate(['currency', 'taxes']);
+            if (!plan) {
+                return res.status(404).json({ success: false, message: 'Plan not found' });
             }
-            return total;
-        };
+            plans = [plan];
+        } else {
+            plans = await Plan.find({ deleted_at: null, is_active: true }).populate(['currency', 'taxes']);
+        }
 
+        let syncCount = 0;
         for (const plan of plans) {
-            results.processed++;
-            const planWithTotal = {
-                ...plan.toObject(),
-                price: calculateTotalPrice(plan)
-            };
-
-            if (setting?.is_stripe_active && (!plan.stripe_product_id || !plan.stripe_price_id)) {
-                try {
-                    const stripeResult = await StripeService.createProductPriceAndPaymentLink(planWithTotal);
-                    if (stripeResult) {
-                        plan.stripe_product_id = stripeResult.productId;
-                        plan.stripe_price_id = stripeResult.priceId;
-                        plan.stripe_payment_link_id = stripeResult.paymentLinkId;
-                        plan.stripe_payment_link_url = stripeResult.paymentLinkUrl;
-                        results.stripe.synced++;
-                    } else {
-                        results.stripe.failed++;
-                    }
-                } catch (err) {
-                    console.error(`Stripe sync failed for plan ${plan.name}:`, err.message);
-                    results.stripe.failed++;
-                }
-            }
-
-            if (setting?.is_razorpay_active && !plan.razorpay_plan_id) {
-                try {
-                    const razorpayPlan = await RazorpayService.createPlan(planWithTotal);
-                    if (razorpayPlan && razorpayPlan.id) {
-                        plan.razorpay_plan_id = razorpayPlan.id;
-                        results.razorpay.synced++;
-                    } else {
-                        results.razorpay.failed++;
-                    }
-                } catch (err) {
-                    console.error(`Razorpay sync failed for plan ${plan.name}:`, err.message);
-                    results.razorpay.failed++;
-                }
-            }
-
-            if (setting?.is_paypal_active && !plan.paypal_plan_id) {
-                try {
-                    const paypalProduct = await PayPalService.createProduct(planWithTotal);
-                    if (paypalProduct && paypalProduct.id) {
-                        const paypalPlan = await PayPalService.createPlan(planWithTotal, paypalProduct.id);
-                        if (paypalPlan && paypalPlan.id) {
-                            plan.paypal_plan_id = paypalPlan.id;
-                            results.paypal.synced++;
-                        } else {
-                            results.paypal.failed++;
-                        }
-                    } else {
-                        results.paypal.failed++;
-                    }
-                } catch (err) {
-                    console.error(`PayPal sync failed for plan ${plan.name}:`, err.message);
-                    results.paypal.failed++;
-                }
-            }
-
-            if (plan.isModified()) {
-                await plan.save();
-            }
+            const updated = await _syncPlanInternal(plan, force);
+            if (updated) syncCount++;
         }
 
         return res.status(200).json({
             success: true,
-            message: 'Plan synchronization complete',
-            data: results
+            message: id ? 'Plan sync completed.' : `Sync completed for ${syncCount} plans.`,
+            syncCount,
+            data: id ? plans[0] : plans
         });
     } catch (error) {
         console.error('Error syncing plans to gateways:', error);

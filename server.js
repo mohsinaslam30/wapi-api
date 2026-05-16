@@ -12,6 +12,7 @@ import './utils/system-settings.js';
 import { getSequenceQueue } from './queues/sequence-queue.js';
 import statusCronService from './cronjob/status.cronService.js';
 import trialPeriodCronService from './cronjob/trialPeriod.cronService.js';
+import EmailTemplateService from './services/email-template.service.js';
 
 async function loadStripeKeysFromSettings() {
   try {
@@ -72,7 +73,7 @@ import('./services/whatsapp/unified-whatsapp.service.js').then(module => {
 io.on('connection', (socket) => {
   console.log('WebSocket client connected:', socket.id);
   socket.on('disconnect', () => {
- 
+
   });
 });
 
@@ -84,6 +85,7 @@ io.on('connection', (socket) => {
     await fixSettingsData();
     await statusCronService();
     await trialPeriodCronService();
+    await EmailTemplateService.init();
 
 
     import('./services/whatsapp/unified-whatsapp.service.js').then(module => {

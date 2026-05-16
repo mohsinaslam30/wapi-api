@@ -63,7 +63,8 @@ export const createCampaign = async (req, res) => {
       carousel_cards_data,
       offer_expiration_minutes,
       is_scheduled = false,
-      scheduled_at
+      scheduled_at,
+      avoid_unsubscribers = true
     } = req.body;
 
     const userId = req.user.owner_id;
@@ -193,6 +194,9 @@ export const createCampaign = async (req, res) => {
       }
     }
 
+    let avoidUnsub = avoid_unsubscribers;
+    if (typeof avoidUnsub === 'string') avoidUnsub = avoidUnsub === 'true';
+
     let contacts = [];
     if (recipient_type === 'all_contacts') {
       contacts = await Contact.find({
@@ -247,7 +251,15 @@ export const createCampaign = async (req, res) => {
       contacts = await segmentService.getContactsForSegments(segment_ids, userId);
     }
 
+    const totalFoundBeforeFilter = contacts.length;
+    if (avoidUnsub) {
+      contacts = contacts.filter(c => c.is_unsubscribed !== true);
+    }
+
     if (contacts.length === 0) {
+      if (avoidUnsub && totalFoundBeforeFilter > 0) {
+        return res.status(400).json({ error: 'contact are in unsubscribe list you can not send campaign' });
+      }
       return res.status(400).json({ error: 'No contacts found for the specified criteria' });
     }
 
@@ -299,7 +311,7 @@ export const createCampaign = async (req, res) => {
       waba_id,
       template_id,
       template_name: template.template_name,
-      language_code: language_code?? template.language,
+      language_code: language_code ?? template.language,
       recipient_type,
       specific_contacts: recipient_type === 'specific_contacts' ? specific_contacts : [],
       tag_ids: recipient_type === 'tags' ? tag_ids : [],
@@ -313,6 +325,7 @@ export const createCampaign = async (req, res) => {
       offer_expiration_minutes: offer_expiration_minutes ?? null,
       is_scheduled: isScheduledBool,
       scheduled_at: parsedScheduledAt,
+      avoid_unsubscribers: avoidUnsub,
       status: isScheduledBool ? 'scheduled' : 'draft',
       stats: {
         total_recipients: contacts.length,
@@ -372,24 +385,27 @@ export const getAllCampaigns = async (req, res) => {
     if (search) {
       matchFilter.$or = [
         { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+        { description: { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } },
+        { recipient_type: { $regex: search, $options: 'i' } },
+        { template_name: { $regex: search, $options: 'i' } }
       ];
     }
 
     const [totalCount, campaigns, campaignStatsAgg] = await Promise.all([
       Campaign.countDocuments(matchFilter),
       Campaign.find(matchFilter)
-      .select(
-        'name description recipient_type is_scheduled scheduled_at sent_at stats status completion_duration_seconds template_id created_at'
-      )
-      .populate({
-        path: 'template_id',
-        select: 'template_name'
-      })
-      .sort({ [sortField]: sortOrder })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
+        .select(
+          'name description recipient_type is_scheduled scheduled_at sent_at stats status completion_duration_seconds template_id created_at'
+        )
+        .populate({
+          path: 'template_id',
+          select: 'template_name'
+        })
+        .sort({ [sortField]: sortOrder })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       Campaign.aggregate([
         { $match: matchFilter },
         {
@@ -564,6 +580,12 @@ export const updateCampaign = async (req, res) => {
 
       updateData.status = isScheduledUpdate ? 'scheduled' : 'draft';
       updateData.is_scheduled = isScheduledUpdate;
+    }
+
+    if (updateData.avoid_unsubscribers !== undefined) {
+      updateData.avoid_unsubscribers = typeof updateData.avoid_unsubscribers === 'string'
+        ? updateData.avoid_unsubscribers === 'true'
+        : updateData.avoid_unsubscribers;
     }
 
     const updatedCampaign = await Campaign.findByIdAndUpdate(

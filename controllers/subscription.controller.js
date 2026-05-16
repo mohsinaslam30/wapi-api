@@ -1,4 +1,4 @@
-import { Subscription, AiPromptLog, Plan, PaymentHistory, User, Tag, Contact, Template, Campaign, CustomField, AutomationFlow, Team, Setting, Message, Form, WhatsappCallAgent, MessageBot, AppointmentBooking, KanbanFunnel, FacebookAdCampaign, Segment } from '../models/index.js';
+import { Subscription, AiPromptLog, Plan, PaymentHistory, User, Tag, Contact, QuickReply, Template, Campaign, CustomField, AutomationFlow, Team, Setting, Message, Form, WhatsappCallAgent, MessageBot, AppointmentBooking, KanbanFunnel, FacebookAdCampaign, Segment, Workspace, FacebookLead, GoogleAccount } from '../models/index.js';
 import mongoose from 'mongoose';
 import {
     StripeService,
@@ -8,13 +8,14 @@ import {
 } from '../utils/payment-gateway.service.js';
 import { generateInvoiceNumber } from '../utils/invoice-helper.js';
 import { getExchangeRate, formatAmount } from '../utils/currency.service.js';
+import EmailTemplateService from '../services/email-template.service.js';
 import { generateInvoicePDF } from '../utils/invoice-generator.js';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 
-const SUBSCRIPTION_STATUS = ['active', 'trial', 'expired', 'cancelled', 'suspended', 'pending'];
+const SUBSCRIPTION_STATUS = ['active', 'trial', 'expired', 'canceled', 'suspended', 'pending'];
 const PAYMENT_STATUS = ['pending', 'paid', 'failed', 'refunded'];
 
 const DEFAULT_SORT_FIELD = 'created_at';
@@ -290,7 +291,8 @@ const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOr
                     { payment_reference: searchParams.regex },
                     { 'user.name': searchParams.regex },
                     { 'user.email': searchParams.regex },
-                    { 'plan.name': searchParams.regex }
+                    { 'plan.name': searchParams.regex },
+                    { payment_gateway: searchParams.regex }
                 ]
             }
         });
@@ -502,9 +504,13 @@ export const approveManualSubscription = async (req, res) => {
             currency: subscription.currency,
             payment_method: subscription.payment_method,
             payment_status: 'success',
+            payment_gateway: 'manual',
             invoice_number: generateInvoiceNumber(),
+            taxes: subscription.plan_id?.taxes || [],
             paid_at: subscription.approved_at
         });
+
+        await EmailTemplateService.sendActivationEmail(subscription);
 
         return res.status(200).json({
             success: true,
@@ -539,7 +545,7 @@ export const rejectManualSubscription = async (req, res) => {
             });
         }
 
-        subscription.status = 'cancelled';
+        subscription.status = 'canceled';
         subscription.payment_status = 'failed';
         subscription.cancelled_at = new Date();
         await subscription.save();
@@ -562,7 +568,7 @@ export const rejectManualSubscription = async (req, res) => {
 const PLAN_SENSITIVE_FIELDS = '-stripe_price_id -stripe_product_id -stripe_payment_link_id -stripe_payment_link_url -razorpay_plan_id';
 
 const fetchDynamicUsage = async (userId) => {
-    const [tagsCount, contactsCount, templatesCount, campaignsCount, customFieldsCount, staffCount, botFlowsCount, aiPromptCount, messagesCount, teamsCount, formsCount, whatsapp_callingCount, messageBotsCount, appointmentBookingsCount, userResult, kanbanFunnelCount, facebookAdCampaignCount, segmentCount] = await Promise.all([
+    const [tagsCount, contactsCount, templatesCount, campaignsCount, customFieldsCount, staffCount, botFlowsCount, aiPromptCount, messagesCount, teamsCount, formsCount, whatsapp_callingCount, messageBotsCount, appointmentBookingsCount, userResult, kanbanFunnelCount, facebookAdCampaignCount, segmentCount, workspaceCount, facebookLeadCount, googleAccountCount, quickReplyCount] = await Promise.all([
         Tag.countDocuments({ created_by: userId, deleted_at: null }),
         Contact.countDocuments({ created_by: userId, deleted_at: null }),
         Template.countDocuments({ user_id: userId }),
@@ -581,10 +587,13 @@ const fetchDynamicUsage = async (userId) => {
         KanbanFunnel.countDocuments({ userId: userId, deleted_at: null }),
         FacebookAdCampaign.countDocuments({ user_id: userId, deleted_at: null }),
         Segment.countDocuments({ user_id: userId, deleted_at: null }),
+        Workspace.countDocuments({ user_id: userId, deleted_at: null }),
+        FacebookLead.countDocuments({ user_id: userId, deleted_at: null }),
+        GoogleAccount.countDocuments({ user_id: userId, deleted_at: null }),
+        QuickReply.countDocuments({ user_id: userId, deleted_at: null }),
     ]);
 
     const storageUsedMB = parseFloat(((userResult?.storage_used || 0) / (1024 * 1024)).toFixed(2));
-
     return {
         tags_used: tagsCount,
         contacts_used: contactsCount,
@@ -593,7 +602,6 @@ const fetchDynamicUsage = async (userId) => {
         custom_fields_used: customFieldsCount,
         staff_used: staffCount,
         bot_flow_used: botFlowsCount,
-        message_bots_used: botFlowsCount,
         ai_prompts_used: aiPromptCount,
         conversations_used: messagesCount,
         teams_used: teamsCount,
@@ -605,6 +613,15 @@ const fetchDynamicUsage = async (userId) => {
         kanban_funnel_used: kanbanFunnelCount,
         facebook_ad_campaign_used: facebookAdCampaignCount,
         segments_used: segmentCount,
+        workspaces_used: workspaceCount,
+        facebook_lead_used: facebookLeadCount,
+        google_account_used: googleAccountCount,
+        quick_replies_used: quickReplyCount,
+        document_file_limit_used: 0,
+        audio_file_limit_used: 0,
+        video_file_limit_used: 0,
+        image_file_limit_used: 0,
+        multiple_file_share_limit_used: 0
     };
 };
 
@@ -622,7 +639,7 @@ export const getUserSubscription = async (req, res) => {
         })
             .populate({
                 path: 'plan_id',
-                select: '_id name price features is_featured',
+                select: '_id name price features enabled_features is_featured',
                 ...PLAN_SENSITIVE_FIELDS,
                 populate: {
                     path: 'currency taxes',
@@ -641,12 +658,17 @@ export const getUserSubscription = async (req, res) => {
 
         const setting = await Setting.findOne().select('storage_limit').lean();
         const storageLimit = setting?.storage_limit || 0;
+        const effectiveFeatures = subscription.is_custom && subscription.features
+            ? { ...(subscription.plan_id?.features || {}), ...subscription.features }
+            : (subscription.plan_id?.features || {});
 
-        if (subscription.plan_id && subscription.plan_id.features) {
-            subscription.plan_id.features.storage = storageLimit;
-        } else if (subscription.features) {
-            subscription.features.storage = storageLimit;
-        }
+        const effectiveEnabledFeatures = subscription.is_custom && subscription.enabled_features
+            ? { ...(subscription.plan_id?.enabled_features || {}), ...subscription.enabled_features }
+            : (subscription.plan_id?.enabled_features || {});
+
+        effectiveFeatures.storage = storageLimit;
+        subscription.features = effectiveFeatures;
+        subscription.enabled_features = effectiveEnabledFeatures;
 
         const data = { ...subscription, usage };
 
@@ -729,7 +751,7 @@ export const createStripeSubscription = async (req, res) => {
                 stripe_subscription_id: null,
                 taxes: plan.taxes || [],
                 features: plan.features,
-                auto_rereturnDocument: 'after'
+                auto_renew: true
             });
         }
 
@@ -944,7 +966,7 @@ export const createRazorpaySubscription = async (req, res) => {
                 razorpay_subscription_id: linkResult.id,
                 taxes: plan.taxes || [],
                 features: plan.features,
-                auto_rereturnDocument: 'after'
+                auto_renew: true
             });
         }
 
@@ -1051,7 +1073,7 @@ export const createPayPalSubscription = async (req, res) => {
                 paypal_subscription_id: paypalSubscription.id,
                 taxes: plan.taxes || [],
                 features: plan.features,
-                auto_rereturnDocument: 'after'
+                auto_renew: true
             });
         }
 
@@ -1133,7 +1155,7 @@ export const assignPlanToUser = async (req, res) => {
                 }
             }
 
-            sub.status = 'cancelled';
+            sub.status = 'canceled';
             sub.cancelled_at = new Date();
             sub.auto_renew = false;
             await sub.save();
@@ -1184,6 +1206,8 @@ export const assignPlanToUser = async (req, res) => {
             paid_at: now,
             notes: 'Admin assigned plan'
         });
+
+        await EmailTemplateService.sendActivationEmail(subscription);
 
         return res.status(201).json({
             success: true,
@@ -1248,7 +1272,7 @@ export const cancelSubscription = async (req, res) => {
             subscription.auto_renew = false;
             subscription.cancelled_at = new Date();
         } else {
-            subscription.status = 'cancelled';
+            subscription.status = 'canceled';
             subscription.cancelled_at = new Date();
             subscription.auto_renew = false;
         }
@@ -1290,7 +1314,7 @@ export const resumeSubscription = async (req, res) => {
             });
         }
 
-        if (subscription.status !== 'cancelled' && !subscription.cancelled_at) {
+        if (subscription.status !== 'canceled' && !subscription.cancelled_at) {
             return res.status(400).json({
                 success: false,
                 message: 'Subscription is not cancelled'
@@ -1305,7 +1329,7 @@ export const resumeSubscription = async (req, res) => {
 
         subscription.auto_renew = true;
         subscription.cancelled_at = null;
-        if (subscription.status === 'cancelled' && new Date() <= subscription.current_period_end) {
+        if (subscription.status === 'canceled' && new Date() <= subscription.current_period_end) {
             subscription.status = 'active';
         }
 
@@ -1831,7 +1855,7 @@ export const downloadInvoice = async (req, res) => {
 export const overrideSubscriptionLimits = async (req, res) => {
     try {
         const { userId } = req.params;
-        const { features } = req.body;
+        const { features, enabled_features } = req.body;
         const adminId = req.user._id;
 
         const subscription = await Subscription.findOne({
@@ -1847,9 +1871,64 @@ export const overrideSubscriptionLimits = async (req, res) => {
             });
         }
 
-        subscription.features = { ...(subscription.features || {}), ...features };
-        subscription.is_custom = true;
-        subscription.overridden_by = adminId;
+        if (features) {
+            const numericFeatures = [
+                'contacts', 'template_bots', 'message_bots', 'campaigns',
+                'ai_prompts', 'staff', 'conversations', 'quick_replies',
+                'bot_flow', 'broadcast_messages', 'custom_fields', 'tags',
+                'forms', 'whatsapp_calling', 'teams', 'appointment_bookings',
+                'facebookAds_campaign', 'kanban_funnels', 'segments', 'workspaces', 'facebook_lead',
+                'document_file_limit', 'audio_file_limit', 'video_file_limit',
+                'image_file_limit', 'multiple_file_share_limit',
+                'google_account'
+            ];
+
+            for (const feature of numericFeatures) {
+                if (features[feature] !== undefined &&
+                    (typeof features[feature] !== 'number' || features[feature] < 0)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `${feature} must be a non-negative number`
+                    });
+                }
+            }
+
+            const booleanFeatures = [
+                'rest_api', 'whatsapp_webhook', 'auto_replies',
+                'analytics',
+                'priority_support'
+            ];
+
+            for (const feature of booleanFeatures) {
+                if (features[feature] !== undefined && typeof features[feature] !== 'boolean') {
+                    return res.status(400).json({
+                        success: false,
+                        message: `${feature} must be a boolean value`
+                    });
+                }
+            }
+        }
+
+        if (enabled_features) {
+            for (const feature of Object.keys(enabled_features)) {
+                if (typeof enabled_features[feature] !== 'boolean' && enabled_features[feature] !== 'true' && enabled_features[feature] !== 'false') {
+                    return res.status(400).json({
+                        success: false,
+                        message: `${feature} must be a boolean value`
+                    });
+                }
+            }
+            subscription.enabled_features = { ...(subscription.enabled_features || {}), ...enabled_features };
+        }
+
+        if (features) {
+            subscription.features = { ...(subscription.features || {}), ...features };
+        }
+        if (features || enabled_features) {
+            subscription.is_custom = true;
+            subscription.overridden_by = adminId;
+        }
+
         await subscription.save();
 
         return res.status(200).json({
@@ -1884,7 +1963,8 @@ export const resetSubscriptionLimits = async (req, res) => {
             });
         }
 
-        subscription.features = subscription.plan_id.features;
+        subscription.features = subscription.plan_id.features || {};
+        subscription.enabled_features = subscription.plan_id.enabled_features || {};
         subscription.is_custom = false;
         subscription.overridden_by = null;
         await subscription.save();

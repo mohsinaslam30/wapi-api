@@ -1,4 +1,4 @@
-import { WhatsappPhoneNumber, Message, EcommerceOrder, User, AppointmentBooking, AppointmentConfig, Contact, FacebookAdCampaign, AutomationFlow } from '../models/index.js';
+import { WhatsappPhoneNumber, Message, EcommerceOrder, User, AppointmentBooking, AppointmentConfig, Contact, FacebookAdCampaign, AutomationFlow, UserSetting } from '../models/index.js';
 import {
   isWithinWorkingHours,
   findMatchingBot,
@@ -132,7 +132,70 @@ export const handleIncomingMessage = async (req, res, io = null) => {
       reaction_message_id: reactionMessageId
     });
 
-  
+    if (content && typeof content === 'string') {
+      const upperContent = content.trim().toUpperCase();
+
+      const userSetting = await UserSetting.findOne({ user_id: whatsappPhoneNumber.user_id }).lean();
+
+      const optOutKeywords = (userSetting?.whatsapp_optout_keyword?.length > 0 ? userSetting.whatsapp_optout_keyword : ['STOP'])
+        .filter(k => k)
+        .map(k => k.trim().toUpperCase());
+
+      const optInKeywords = (userSetting?.whatsapp_optin_keyword?.length > 0 ? userSetting.whatsapp_optin_keyword : ['START'])
+        .filter(k => k)
+        .map(k => k.trim().toUpperCase());
+
+      if (optOutKeywords.includes(upperContent)) {
+        await Contact.findByIdAndUpdate(contactDoc._id, { is_unsubscribed: true });
+
+        try {
+          const { default: unifiedService } = await import('../services/whatsapp/unified-whatsapp.service.js');
+
+          const resubscribeHint = (userSetting?.whatsapp_optin_keyword && userSetting.whatsapp_optin_keyword.length > 0)
+            ? userSetting.whatsapp_optin_keyword.join('/ ')
+            : 'START';
+
+          let responseMsg = userSetting?.whatsapp_unsubscribe_message || `You have been unsubscribed and will no longer receive messages. Reply {optin_keywords} to subscribe again.`;
+          responseMsg = responseMsg.replace('{optin_keywords}', resubscribeHint);
+
+          await unifiedService.sendMessage(whatsappPhoneNumber.user_id, {
+            whatsappPhoneNumberId: whatsappPhoneNumber._id,
+            contactId: contactDoc._id,
+            messageText: responseMsg,
+            messageType: 'text',
+            ignoreUnsubscribe: true
+          });
+        } catch (sendErr) {
+          console.error('[Unsubscribe] Failed to send confirmation:', sendErr.message);
+        }
+
+        return res.sendStatus(200);
+      }
+      else if (optInKeywords.includes(upperContent)) {
+        await Contact.findByIdAndUpdate(contactDoc._id, { is_unsubscribed: false });
+
+        try {
+          const { default: unifiedService } = await import('../services/whatsapp/unified-whatsapp.service.js');
+          const resubscribeMsg = userSetting?.whatsapp_resubscribe_message || "Welcome back! You have been re-subscribed to our broadcasts.";
+          await unifiedService.sendMessage(whatsappPhoneNumber.user_id, {
+            whatsappPhoneNumberId: whatsappPhoneNumber._id,
+            contactId: contactDoc._id,
+            messageText: resubscribeMsg,
+            messageType: 'text',
+            ignoreUnsubscribe: true
+          });
+        } catch (sendErr) {
+          console.error('[Resubscribe] Failed to send confirmation:', sendErr.message);
+        }
+        return res.sendStatus(200);
+      }
+    }
+
+    if (contactDoc.is_unsubscribed) {
+      await Contact.findByIdAndUpdate(contactDoc._id, { is_unsubscribed: false });
+      contactDoc.is_unsubscribed = false;
+    }
+
     if (message.referral && message.referral.source_id && message.referral.source_type === 'ad') {
       try {
         const adId = message.referral.source_id;

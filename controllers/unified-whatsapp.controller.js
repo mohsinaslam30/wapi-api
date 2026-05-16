@@ -12,7 +12,7 @@ import mongoose from 'mongoose';
 const processedAuthCodes = new Set();
 
 const DEFAULT_PAGE = 1;
-const DEFAULT_LIMIT = 10;
+const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
 
 const extractPhoneNumber = (userId) => {
@@ -804,7 +804,9 @@ export const getMessages = async (req, res) => {
       return d;
     })() : null;
 
-    const messages = await unifiedWhatsAppService.getMessages(
+    const { page, limit } = parsePaginationParams({ ...req.query, limit: req.query.limit || 30 });
+
+    const messagesResult = await unifiedWhatsAppService.getMessages(
       userId,
       contact.phone_number,
       providerType,
@@ -813,9 +815,14 @@ export const getMessages = async (req, res) => {
       {
         search: search && String(search).trim() ? String(search).trim() : null,
         start_date: startDate,
-        end_date: endDate
+        end_date: endDate,
+        page,
+        limit
       }
     );
+
+    const messages = messagesResult.data || [];
+    const pagination = messagesResult.pagination || { total: 0, page, limit, hasMore: false };
 
     const replyIds = [...new Set(messages.map(m => m.reply_message_id).filter(id => !!id))];
     const replyMessagesMap = {};
@@ -872,7 +879,8 @@ export const getMessages = async (req, res) => {
 
     return res.json({
       success: true,
-      messages: Object.values(groupedMessages)
+      messages: Object.values(groupedMessages),
+      pagination
     });
   } catch (error) {
     console.error('Error retrieving messages:', error);
@@ -1077,10 +1085,9 @@ export const getRecentChats = async (req, res) => {
         data: []
       });
     }
-    console.log("called")
-    const chats = await unifiedWhatsAppService.getRecentChats(userId, providerType, null, connection);
+    const { page, limit } = parsePaginationParams({ ...req.query, limit: req.query.limit || 15 });
 
-    let filteredChats = chats;
+    let assignedNumbersArr = [];
     if (req.user.role === 'agent' && myPhoneNumber) {
       const assignments = await ChatAssignment.find({
         agent_id: req.user.id,
@@ -1088,16 +1095,24 @@ export const getRecentChats = async (req, res) => {
         $or: [{ status: 'assigned' }, { status: { $exists: false } }]
       }).select('sender_number receiver_number').lean();
 
-      const assignedNumbers = new Set();
+      const assignedNumbersSet = new Set();
       assignments.forEach(a => {
-        if (a.sender_number !== myPhoneNumber) assignedNumbers.add(a.sender_number);
-        if (a.receiver_number !== myPhoneNumber) assignedNumbers.add(a.receiver_number);
+        if (a.sender_number !== myPhoneNumber) assignedNumbersSet.add(a.sender_number);
+        if (a.receiver_number !== myPhoneNumber) assignedNumbersSet.add(a.receiver_number);
       });
-
-      filteredChats = chats.filter(chat =>
-        assignedNumbers.has(chat.contact.number)
-      );
+      assignedNumbersArr = Array.from(assignedNumbersSet);
     }
+
+    const chatsResult = await unifiedWhatsAppService.getRecentChats(userId, providerType, null, connection, {
+      page,
+      limit,
+      assignedNumbers: assignedNumbersArr
+    });
+
+    const chats = chatsResult.data || [];
+    const pagination = chatsResult.pagination || { total: 0, page, limit, hasMore: false };
+
+    let filteredChats = chats;
 
     const userContacts = await Contact.find({
       created_by: contactsOwnerId,
@@ -1389,7 +1404,8 @@ export const getRecentChats = async (req, res) => {
 
     return res.json({
       success: true,
-      data: filteredChats
+      data: filteredChats,
+      pagination
     });
   } catch (error) {
     console.error('Error fetching recent chats:', error);
@@ -1785,25 +1801,27 @@ export const getUserConnections = async (req, res) => {
             let verified_name = phone.verified_name;
             let quality_rating = phone.quality_rating;
 
-            try {
-              const response = await axios.get(
-                `https://graph.facebook.com/v22.0/${phone.phone_number_id}`,
-                {
-                  params: {
-                    fields: 'verified_name,quality_rating'
-                  },
-                  headers: {
-                    Authorization: `Bearer ${waba.access_token}`
+            if (waba.provider !== 'baileys') {
+              try {
+                const response = await axios.get(
+                  `https://graph.facebook.com/v22.0/${phone.phone_number_id}`,
+                  {
+                    params: {
+                      fields: 'verified_name,quality_rating'
+                    },
+                    headers: {
+                      Authorization: `Bearer ${waba.access_token}`
+                    }
                   }
-                }
-              );
-              verified_name = response.data.verified_name || verified_name;
-              quality_rating = response.data.quality_rating || quality_rating;
-            } catch (err) {
-              console.error(
-                `Failed to fetch WhatsApp details for ${phone.phone_number_id}`,
-                err.message
-              );
+                );
+                verified_name = response.data.verified_name || verified_name;
+                quality_rating = response.data.quality_rating || quality_rating;
+              } catch (err) {
+                console.error(
+                  `Failed to fetch WhatsApp details for ${phone.phone_number_id}`,
+                  err.message
+                );
+              }
             }
 
             return {
@@ -1894,7 +1912,7 @@ export const getMyPhoneNumbers = async (req, res) => {
         let verified_name = phone.verified_name;
         let quality_rating = phone.quality_rating;
 
-        if (phone.waba_id?.access_token) {
+        if (phone.waba_id?.provider !== 'baileys' && phone.waba_id?.access_token) {
           try {
             const response = await axios.get(
               `https://graph.facebook.com/v22.0/${phone.phone_number_id}`,
@@ -1987,25 +2005,28 @@ export const getWabaPhoneNumbers = async (req, res) => {
         let verified_name = phone.verified_name;
         let quality_rating = phone.quality_rating;
 
-        try {
-          const response = await axios.get(
-            `https://graph.facebook.com/v22.0/${phone.phone_number_id}`,
-            {
-              params: {
-                fields: 'verified_name,quality_rating'
-              },
-              headers: {
-                Authorization: `Bearer ${waba.access_token}`
+        if (waba.provider !== 'baileys') {
+          try {
+            const response = await axios.get(
+              `https://graph.facebook.com/v22.0/${phone.phone_number_id}`,
+              {
+                params: {
+                  fields: 'verified_name,quality_rating'
+                },
+                headers: {
+                  Authorization: `Bearer ${waba.access_token}`
+                }
               }
-            }
-          );
-          verified_name = response.data.verified_name || verified_name;
-          quality_rating = response.data.quality_rating || quality_rating;
-        } catch (err) {
-          console.error(
-            `Failed to fetch WhatsApp details for ${phone.phone_number_id}`,
-            err.message
-          );
+            );
+            console.log("response", response.data);
+            verified_name = response.data.verified_name || verified_name;
+            quality_rating = response.data.quality_rating || quality_rating;
+          } catch (err) {
+            console.error(
+              `Failed to fetch WhatsApp details for ${phone.phone_number_id}`,
+              err.message
+            );
+          }
         }
 
         return {

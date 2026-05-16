@@ -26,7 +26,7 @@ export const checkPermission = (permissionSlug) => {
         userRole = userWithRole.role_id;
       }
 
-      if (userRole.name === 'super_admin') {
+      if (req.user?.role === 'super_admin' || req.isImpersonating || userRole.name === 'super_admin') {
         return next();
       }
 

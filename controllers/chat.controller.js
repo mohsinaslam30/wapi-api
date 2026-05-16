@@ -126,6 +126,9 @@ const sortChatsByLastMessage = (chats) => {
 export const getRecentChats = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 15;
+    const skip = (page - 1) * limit;
 
     const connectionStatus = await validateWhatsAppConnection(userId);
     if (!connectionStatus.isConnected) {
@@ -137,61 +140,102 @@ export const getRecentChats = async (req, res) => {
 
     const myPhoneNumber = connectionStatus.phoneNumber;
 
-    const allContactNumbers = await fetchUniqueContactNumbers(myPhoneNumber);
-
-    let filteredContactNumbers = allContactNumbers;
+    let matchQuery = {
+      $or: [
+        { sender_number: myPhoneNumber },
+        { recipient_number: myPhoneNumber }
+      ],
+      deleted_at: null
+    };
 
     if (req.user.role === 'agent') {
       const assignments = await ChatAssignment.find({
         agent_id: req.user.id,
         $or: [{ status: 'assigned' }, { status: { $exists: false } }]
-      }).select('sender_number receiver_number').lean();
+      }).lean();
 
-      const assignedNumbers = new Set();
+      const assignedNumbers = Array.from(new Set(assignments.flatMap(a => [a.sender_number, a.receiver_number])))
+        .filter(num => num !== myPhoneNumber);
 
-      assignments.forEach(a => {
-        if (a.sender_number !== myPhoneNumber) assignedNumbers.add(a.sender_number);
-        if (a.receiver_number !== myPhoneNumber) assignedNumbers.add(a.receiver_number);
-      });
-
-      filteredContactNumbers = allContactNumbers.filter(num =>
-        assignedNumbers.has(num)
-      );
+      matchQuery.$and = [
+        {
+          $or: [
+            { sender_number: { $in: assignedNumbers } },
+            { recipient_number: { $in: assignedNumbers } }
+          ]
+        }
+      ];
     }
 
-    const contacts = await Contact.find({
-      phone_number: { $in: filteredContactNumbers },
-      created_by: userId,
-      deleted_at: null
-    }).select('phone_number chat_status').lean();
-
-    const contactStatusMap = contacts.reduce((acc, c) => {
-      acc[c.phone_number] = c.chat_status || 'open';
-      return acc;
-    }, {});
-
-    const recentChats = await Promise.all(
-      filteredContactNumbers.map(async (contactNumber) => {
-        const lastMessage = await fetchLastMessage(myPhoneNumber, contactNumber);
-
-        return {
-          contact: {
-            number: contactNumber,
-            name: contactNumber,
-            avatar: null,
-            labels: [],
-            chat_status: contactStatusMap[contactNumber] || 'open'
+    const result = await Message.aggregate([
+      { $match: matchQuery },
+      { $sort: { wa_timestamp: -1 } },
+      {
+        $group: {
+          _id: {
+            $cond: [
+              { $eq: ["$sender_number", myPhoneNumber] },
+              "$recipient_number",
+              "$sender_number"
+            ]
           },
-          lastMessage
-        };
-      })
-    );
+          lastMessage: { $first: "$$ROOT" }
+        }
+      },
+      {
+        $lookup: {
+          from: 'contacts',
+          let: { contactNum: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$phone_number", "$$contactNum"] },
+                    { $eq: ["$created_by", new mongoose.Types.ObjectId(userId)] },
+                    { $eq: ["$deleted_at", null] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'contact'
+        }
+      },
+      { $unwind: "$contact" },
+      { $sort: { "lastMessage.wa_timestamp": -1 } },
+      {
+        $facet: {
+          metadata: [{ $count: "total" }],
+          data: [{ $skip: skip }, { $limit: limit }]
+        }
+      }
+    ]);
 
-    const sortedChats = sortChatsByLastMessage(recentChats);
+    const chatsData = result[0].data;
+    const total = result[0].metadata[0]?.total || 0;
+
+    const formattedChats = chatsData.map(chat => ({
+      contact: {
+        id: chat.contact._id,
+        number: chat._id,
+        name: chat.contact.name || chat._id,
+        avatar: chat.contact.avatar || null,
+        labels: [],
+        chat_status: chat.contact.chat_status || 'open'
+      },
+      lastMessage: chat.lastMessage
+    }));
 
     return res.json({
       success: true,
-      data: sortedChats
+      data: formattedChats,
+      pagination: {
+        total,
+        page,
+        limit,
+        hasMore: total > skip + chatsData.length
+      }
     });
   } catch (error) {
     console.error('Error fetching recent chats:', error);

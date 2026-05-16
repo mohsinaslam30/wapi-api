@@ -66,6 +66,27 @@ const facebookLeadFormSchema = new mongoose.Schema({
   is_active: {
     type: Boolean,
     default: true
+  },
+
+  send_first_template: {
+    type: Boolean,
+    default: false
+  },
+
+  template_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Template',
+    default: null
+  },
+
+  template_variable_mappings: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+
+  template_carousel_cards_data: {
+    type: mongoose.Schema.Types.Mixed,
+    default: []
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

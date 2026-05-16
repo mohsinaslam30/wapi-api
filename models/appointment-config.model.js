@@ -29,7 +29,7 @@ const appointmentConfigSchema = new mongoose.Schema({
   },
   waba_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'WabaConfiguration',
+    ref: 'WhatsappWaba',
     required: true
   },
   name: { type: String, required: true, trim: true },

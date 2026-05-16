@@ -76,8 +76,8 @@ const ALLOWED_SORT_FIELDS = ['name', 'code', 'symbol', 'exchange_rate', 'decimal
 
 const parsePaginationParams = (query) => {
   const page = Math.max(1, parseInt(query.page) || DEFAULT_PAGE);
-  const limit = Math.max(1, Math.min(MAX_LIMIT, parseInt(query.limit) || DEFAULT_LIMIT));
-  const skip = (page - 1) * limit;
+  const limit = query.limit ? Math.max(1, Math.min(MAX_LIMIT, parseInt(query.limit) || DEFAULT_LIMIT)) : null;
+  const skip = limit ? (page - 1) * limit : 0;
 
   return { page, limit, skip };
 };
@@ -191,11 +191,13 @@ export const getCurrencies = async (req, res) => {
     const settings = await Setting.findOne().select('default_currency').lean();
     const defaultCurrencyId = settings?.default_currency?.toString();
 
-    const currencies = await Currency.find(searchQuery)
-      .sort({ [sortField]: sortOrder })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    let currencyQuery = Currency.find(searchQuery).sort({ [sortField]: sortOrder });
+
+    if (limit) {
+      currencyQuery = currencyQuery.skip(skip).limit(limit);
+    }
+
+    const currencies = await currencyQuery.lean();
 
     const currenciesWithDefault = currencies.map(curr => ({
       ...curr,
@@ -210,9 +212,9 @@ export const getCurrencies = async (req, res) => {
         currencies: currenciesWithDefault,
         pagination: {
           currentPage: page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: limit ? Math.ceil(total / limit) : (total > 0 ? 1 : 0),
           totalItems: total,
-          itemsPerPage: limit
+          itemsPerPage: limit || total
         }
       }
     });

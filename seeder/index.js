@@ -9,6 +9,8 @@ import seedCurrency from './seedCurrency.js';
 import seedAdminTemplates from './seedAdminTemplates.js';
 import seedAIModels from './seedAIModels.js';
 import seedLanguage from './seedLanguage.js';
+import seedAuthPageSetup from './seedAuthPageSetup.js';
+import seedGuide from './seedGuide.js';
 import { connectDB } from '../models/index.js';
 
 
@@ -27,6 +29,8 @@ export const seedAll = async () => {
         await seedPages();
         await seedAdminTemplates();
         await seedAIModels();
+        await seedAuthPageSetup();
+        await seedGuide();
 
         console.log('All data seeded successfully!');
         process.exit(0)

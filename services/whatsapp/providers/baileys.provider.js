@@ -31,6 +31,7 @@ export default class BaileysProvider extends BaseProvider {
     constructor() {
         super();
         this.sockets = new Map();
+        this.initializing = new Map();
         this.io = null;
     }
 
@@ -66,7 +67,15 @@ export default class BaileysProvider extends BaseProvider {
             return { success: true, status: 'active' };
         }
 
-        if (!fs.existsSync(sessionDir)) {
+        if (this.initializing.has(wabaId.toString())) {
+            console.log(`Socket initialization already in progress for WABA ${wabaId}`);
+            return { success: true, status: 'initializing' };
+        }
+
+        this.initializing.set(wabaId.toString(), true);
+
+        try {
+            if (!fs.existsSync(sessionDir)) {
             fs.mkdirSync(sessionDir, { recursive: true });
         }
 
@@ -293,6 +302,9 @@ export default class BaileysProvider extends BaseProvider {
         });
 
         return { success: true };
+        } finally {
+            this.initializing.delete(wabaId.toString());
+        }
     }
 
     async handleIncomingMessage(userId, wabaId, msg) {
@@ -321,7 +333,7 @@ export default class BaileysProvider extends BaseProvider {
                 'requestPhoneNumberMessage',
                 'reactionMessage'
             ];
-            const isInternalType = INTERNAL_MSG_TYPES.slice(0, -1).includes(firstMsgKey); 
+            const isInternalType = INTERNAL_MSG_TYPES.slice(0, -1).includes(firstMsgKey);
             if (isInternalType) {
                 return;
             }
@@ -637,6 +649,11 @@ export default class BaileysProvider extends BaseProvider {
         const messageType = messageTypeInput || (mediaUrl ? this.getMediaTypeFromUrl(mediaUrl) : 'text');
         const jid = `${recipientNumber}@s.whatsapp.net`;
 
+        if (messageTypeInput === 'typing') {
+            await sock.sendPresenceUpdate('composing', jid);
+            return { success: true, status: 'typing_sent' };
+        }
+
         let result;
         const isUrl = mediaUrl && mediaUrl.startsWith('http');
         const isLocalFile = mediaUrl && !isUrl && (mediaUrl.includes('/') || mediaUrl.includes('\\')) && fs.existsSync(mediaUrl);
@@ -688,6 +705,53 @@ export default class BaileysProvider extends BaseProvider {
                     }
                 }
             });
+        } else if (messageType === 'interactive') {
+            const { interactiveType, buttonParams, listParams } = params;
+            
+            if (interactiveType === 'button') {
+                const buttons = (buttonParams || []).map((btn, i) => ({
+                    buttonId: btn.id || `btn_${i}`,
+                    buttonText: { displayText: btn.title },
+                    type: 1
+                }));
+                
+                const buttonMessage = {
+                    text: messageText || 'Please select an option',
+                    footer: params.footerText,
+                    buttons: buttons,
+                    headerType: 1
+                };
+                
+                if (mediaUrl) {
+                    buttonMessage.image = { url: mediaUrl };
+                    buttonMessage.headerType = 4;
+                }
+                
+                result = await sock.sendMessage(jid, buttonMessage, sendOptions);
+            } else if (interactiveType === 'list') {
+                const sections = [
+                    {
+                        title: listParams?.sectionTitle || 'Menu',
+                        rows: (listParams?.items || []).map((item, i) => ({
+                            title: item.title,
+                            rowId: item.id || `item_${i}`,
+                            description: item.description
+                        }))
+                    }
+                ];
+                
+                const listMessage = {
+                    text: messageText || listParams?.body || 'Please select an option',
+                    footer: listParams?.footer,
+                    title: listParams?.header,
+                    buttonText: listParams?.buttonTitle || 'Select',
+                    sections
+                };
+                
+                // Image workaround removed as per user request
+                
+                result = await sock.sendMessage(jid, listMessage, sendOptions);
+            }
         }
 
         if (!result) {
@@ -764,60 +828,125 @@ export default class BaileysProvider extends BaseProvider {
             query.content = { $regex: options.search, $options: 'i' };
         }
 
+        const page = options.page || 1;
+        const limit = options.limit || 30;
+        const skip = (page - 1) * limit;
+
         const messages = await Message.find(query)
-            .sort({ wa_timestamp: 1 })
+            .sort({ wa_timestamp: -1 })
+            .skip(skip)
+            .limit(limit)
             .populate('user_id', 'name')
             .lean();
 
-        return messages;
+        const total = await Message.countDocuments(query);
+
+        return {
+            data: messages.reverse(),
+            pagination: {
+                total,
+                page,
+                limit,
+                hasMore: total > skip + messages.length
+            }
+        };
     }
 
-    async getRecentChats(userId, connection = null) {
+    async getRecentChats(userId, connection = null, options = {}) {
+        if (!connection) {
+            throw new Error('WhatsApp connection not found');
+        }
+
         const myNumber = connection.registred_phone_number;
-        const sentMessages = await Message.distinct('recipient_number', {
-            sender_number: myNumber,
-            recipient_number: { $ne: null },
+        const page = options.page || 1;
+        const limit = options.limit || 15;
+        const skip = (page - 1) * limit;
+
+        const matchQuery = {
+            $or: [
+                { sender_number: myNumber },
+                { recipient_number: myNumber }
+            ],
             deleted_at: null
-        });
+        };
 
-        const receivedMessages = await Message.distinct('sender_number', {
-            recipient_number: myNumber,
-            sender_number: { $ne: null },
+        if (options.assignedNumbers && Array.isArray(options.assignedNumbers) && options.assignedNumbers.length > 0) {
+            matchQuery.$or = [
+                { sender_number: myNumber, recipient_number: { $in: options.assignedNumbers } },
+                { recipient_number: myNumber, sender_number: { $in: options.assignedNumbers } }
+            ];
+        }
+
+        const result = await Message.aggregate([
+            { $match: matchQuery },
+            { $sort: { wa_timestamp: -1 } },
+            {
+                $group: {
+                    _id: {
+                        $cond: [
+                            { $eq: ["$sender_number", myNumber] },
+                            "$recipient_number",
+                            "$sender_number"
+                        ]
+                    },
+                    lastMessage: { $first: "$$ROOT" }
+                }
+            },
+            { $sort: { "lastMessage.wa_timestamp": -1 } },
+            {
+                $facet: {
+                    metadata: [{ $count: "total" }],
+                    data: [{ $skip: skip }, { $limit: limit }]
+                }
+            }
+        ]);
+
+        const chatsData = result[0].data;
+        const total = result[0].metadata[0]?.total || 0;
+
+        const contactNumbers = chatsData.map(c => c._id);
+        const contacts = await Contact.find({
+            phone_number: { $in: contactNumbers },
+            created_by: userId,
             deleted_at: null
-        });
+        }).select('phone_number name chat_status is_pinned').lean();
 
-        const numbers = [...new Set([...sentMessages, ...receivedMessages])].filter(n => n && n !== myNumber);
+        const contactMap = contacts.reduce((acc, c) => {
+            acc[c.phone_number] = c;
+            return acc;
+        }, {});
 
-        const chats = await Promise.all(numbers.map(async (num) => {
-            const lastMessage = await Message.findOne({
-                $or: [
-                    { sender_number: myNumber, recipient_number: num },
-                    { sender_number: num, recipient_number: myNumber }
-                ],
-                deleted_at: null
-            }).sort({ wa_timestamp: -1 }).lean();
-
-            let contact = await Contact.findOne({ phone_number: num, created_by: userId });
-
-            return {
-                contact: {
-                    id: contact?._id,
-                    number: num,
-                    name: contact?.name || num,
-                    avatar: null
-                },
-                lastMessage: lastMessage ? {
-                    id: lastMessage._id,
-                    content: lastMessage.content,
-                    messageType: lastMessage.message_type,
-                    direction: lastMessage.direction,
-                    fromMe: lastMessage.from_me,
-                    createdAt: lastMessage.wa_timestamp
-                } : null
-            };
+        const formattedChats = chatsData.map(chat => ({
+            contact: {
+                id: contactMap[chat._id]?._id || null,
+                number: chat._id,
+                name: contactMap[chat._id]?.name || chat._id,
+                avatar: null,
+                chat_status: contactMap[chat._id]?.chat_status || 'open'
+            },
+            is_pinned: contactMap[chat._id]?.is_pinned || false,
+            lastMessage: chat.lastMessage ? {
+                id: chat.lastMessage._id.toString(),
+                content: chat.lastMessage.content,
+                messageType: chat.lastMessage.message_type,
+                fileUrl: chat.lastMessage.file_url,
+                direction: chat.lastMessage.direction,
+                fromMe: chat.lastMessage.from_me,
+                createdAt: chat.lastMessage.wa_timestamp,
+                is_seen: chat.lastMessage.is_seen || false,
+                read_status: chat.lastMessage.read_status || 'unread'
+            } : null
         }));
 
-        return chats.sort((a, b) => (b.lastMessage?.createdAt || 0) - (a.lastMessage?.createdAt || 0));
+        return {
+            data: formattedChats,
+            pagination: {
+                total,
+                page,
+                limit,
+                hasMore: total > skip + chatsData.length
+            }
+        };
     }
 
     getMediaTypeFromUrl(url) {
@@ -1056,6 +1185,20 @@ export default class BaileysProvider extends BaseProvider {
     async disconnect(userId, connection = null) {
         if (!connection) throw new Error('Connection not found');
         const wabaId = connection._id || connection.id;
+
+        await Promise.all([
+            WhatsappWaba.findByIdAndUpdate(wabaId, {
+                connection_status: 'disconnected',
+                is_active: false,
+                qr_code: null,
+                deleted_at: new Date()
+            }),
+            WhatsappPhoneNumber.updateMany(
+                { waba_id: wabaId, user_id: userId },
+                { deleted_at: new Date(), is_active: false }
+            )
+        ]);
+
         const sock = this.sockets.get(wabaId.toString());
 
         if (sock) {
@@ -1072,21 +1215,9 @@ export default class BaileysProvider extends BaseProvider {
                 try { sock.end(); } catch { }
             }
             this.sockets.delete(wabaId.toString());
+        } else {
+            this.emitStatus(wabaId, 'disconnected', { message: 'Disconnected by user' });
         }
-        await Promise.all([
-            WhatsappWaba.findByIdAndUpdate(wabaId, {
-                connection_status: 'disconnected',
-                is_active: false,
-                qr_code: null,
-                deleted_at: new Date()
-            }),
-            WhatsappPhoneNumber.updateMany(
-                { waba_id: wabaId, user_id: userId },
-                { deleted_at: new Date(), is_active: false }
-            )
-        ]);
-
-        this.emitStatus(wabaId, 'disconnected', { message: 'Disconnected by user' });
 
         return { success: true };
     }

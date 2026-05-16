@@ -8,7 +8,7 @@ const replyMaterialRefSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['ReplyMaterial', 'Template', 'EcommerceCatalog', 'Sequence', 'chatbot'],
+        enum: ['ReplyMaterial', 'Template', 'EcommerceCatalog', 'Sequence', 'Chatbot', 'AppointmentConfig', 'appointment'],
         default: 'ReplyMaterial'
     },
     variables_mapping: {
@@ -45,7 +45,7 @@ const wabaConfigurationSchema = new mongoose.Schema({
     delayed_reply: {
         delay_minutes: { type: Number, default: 30 },
         id: { type: mongoose.Schema.Types.ObjectId, refPath: 'delayed_reply.type', default: null },
-        type: { type: String, enum: ['ReplyMaterial', 'Template', 'EcommerceCatalog', 'Sequence', 'chatbot'], default: 'ReplyMaterial' },
+        type: { type: String, enum: ['ReplyMaterial', 'Template', 'EcommerceCatalog', 'Sequence', 'Chatbot', 'AppointmentConfig', 'appointment'], default: 'ReplyMaterial' },
         variables_mapping: {
             type: Map,
             of: mongoose.Schema.Types.Mixed,

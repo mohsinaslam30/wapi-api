@@ -56,6 +56,7 @@ import EcommerceProduct from './ecommerce-product.model.js';
 import EcommerceOrder from './ecommerce-order.model.js';
 import EcommerceOrderStatusTemplate from './ecommerce-order-status-template.model.js';
 import LandingPage from './landing-page.model.js';
+import AuthPageSetup from './authPageSetup.model.js';
 import ApiKey from './api-key.model.js';
 import Widget from './widget.model.js';
 import ShortLink from './short-link.model.js';
@@ -81,6 +82,7 @@ import QuickReplyFavorite from './quick-reply-favorite.model.js';
 import KanbanFunnel from './kanban-funnel.model.js';
 import KanbanItem from './kanban-item.model.js';
 import Segment from './segment.model.js';
+import Guide from './guide.model.js';
 
 
 import Form from './formBuilder.model.js';
@@ -143,6 +145,7 @@ const db = {
   EcommerceOrder,
   EcommerceOrderStatusTemplate,
   LandingPage,
+  AuthPageSetup,
   ApiKey,
   Widget,
   ShortLink,
@@ -189,7 +192,7 @@ const db = {
   FacebookLeadForm,
   FacebookLead,
   mongoose,
-
+  Guide,
 
 
   connectDB
@@ -229,5 +232,5 @@ export {
   FacebookLeadForm,
   FacebookLead,
   Segment,
-  Plan, Template, Webhook, Subscription, PaymentHistory, AIModel, AgentTask, AutomationFlow, AutomationExecution, ChatAssignment, Contact, CustomField, Tag, Attachment, Campaign, UserSetting, EcommerceCatalog, EcommerceProduct, EcommerceOrder, EcommerceOrderStatusTemplate, LandingPage, ApiKey, Widget, ShortLink, ImportJob, ReplyMaterial, WorkingHours, Workspace, Sequence, SequenceStep, WabaConfiguration, Tax, GoogleAccount, GoogleCalendar, GoogleSheet, QuickReply, QuickReplyFavorite, KanbanFunnel , KanbanItem , connectDB
+  Plan, Template, Webhook, Subscription, PaymentHistory, AIModel, AgentTask, AutomationFlow, AutomationExecution, ChatAssignment, Contact, CustomField, Tag, Attachment, Campaign, UserSetting, EcommerceCatalog, EcommerceProduct, EcommerceOrder, EcommerceOrderStatusTemplate, LandingPage, AuthPageSetup, ApiKey, Widget, ShortLink, ImportJob, ReplyMaterial, WorkingHours, Workspace, Sequence, SequenceStep, WabaConfiguration, Tax, GoogleAccount, GoogleCalendar, GoogleSheet, QuickReply, QuickReplyFavorite, KanbanFunnel, KanbanItem, Guide, connectDB
 };

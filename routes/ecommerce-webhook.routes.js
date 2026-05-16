@@ -8,7 +8,10 @@ import {
   toggleWebhook,
   triggerWebhook,
   getWebhookStats,
-  mapTemplate
+  mapTemplate,
+  getTriggerLogs,
+  getMessageLogs,
+  updateMerchantNotification
 } from "../controllers/ecommerce-webhook.controller.js";
 import { authenticate } from "../middlewares/auth.js";
 import { checkPermission } from "../middlewares/permission.js";
@@ -37,7 +40,12 @@ router.patch("/:id/toggle", authenticate, checkPermission('update.ecommerce_webh
 
 router.get("/:id/stats", authenticate, checkPermission('view.ecommerce_webhooks'), getWebhookStats);
 
+router.get("/:id/trigger-logs", authenticate, checkPermission('view.ecommerce_webhooks'), getTriggerLogs);
 
-router.post("/trigger/:token", checkPermission('create.ecommerce_webhooks'), triggerWebhook);
+router.get("/:id/message-logs", authenticate, checkPermission('view.ecommerce_webhooks'), getMessageLogs);
+router.put("/:id/merchant-notifications", authenticate, checkPermission('update.ecommerce_webhooks'), updateMerchantNotification);
+
+
+router.all("/trigger/:token", triggerWebhook);
 
 export default router;

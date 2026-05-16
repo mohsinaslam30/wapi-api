@@ -4,8 +4,13 @@ import { GoogleAccount } from '../models/index.js';
 
 export const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/spreadsheets',
-  'https://www.googleapis.com/auth/userinfo.email'
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/drive.metadata.readonly',
+  'https://www.googleapis.com/auth/drive',
+  'openid'
 ];
 
 
@@ -57,22 +62,21 @@ export const getAuthenticatedClient = async (googleAccountId) => {
 export const handleGoogleApiError = async (error, googleAccountId) => {
   const isInvalidGrant =
     (error.response?.data?.error === 'invalid_grant') ||
-    (error.message && error.message.includes('invalid_grant')) ||
-    (error.response?.data?.error_description?.includes('expired or revoked'));
+    (error.message && error.message.includes('invalid_grant'));
 
-  if (isInvalidGrant) {
+  const isInsufficientScope = 
+    (error.response?.status === 403 && error.message?.includes('insufficient authentication scopes'));
+  if (isInvalidGrant || isInsufficientScope) {
     try {
       await GoogleAccount.findByIdAndUpdate(googleAccountId, {
         status: 'expired',
         updated_at: new Date()
       });
-      console.warn(`[google_api_helper] Account ${googleAccountId} marked as EXPIRED due to invalid_grant.`);
       return true;
     } catch (dbErr) {
-      console.error(`[google_api_helper] Failed to update account status:`, dbErr.message);
+      console.error(`Failed to update account status:`, dbErr.message);
     }
   }
-
   return false;
 };
 

@@ -32,6 +32,30 @@ class UnifiedWhatsAppService {
   setIO(io) {
     this.io = io;
     this.providers[PROVIDER_TYPES.BAILEY].setIO(io);
+
+    this.io.on('connection', (socket) => {
+      socket.on('whatsapp:agent_typing', async (data) => {
+        try {
+          const { user_id, contact_id, whatsapp_phone_number_id, isTyping } = data;
+          console.log(`[Socket] Received agent_typing: user=${user_id}, contact=${contact_id}, typing=${isTyping}`);
+          if (!isTyping) {
+          }
+          const lastMessage = await Message.findOne({
+            contact_id: contact_id,
+            from_me: false
+          }).sort({ created_at: -1 });
+
+          await this.sendMessage(user_id, {
+            contactId: contact_id,
+            whatsappPhoneNumberId: whatsapp_phone_number_id,
+            messageType: 'typing',
+            replyMessageId: lastMessage?.wa_message_id
+          });
+        } catch (err) {
+          console.error('[UnifiedService] Error handling agent typing socket event:', err.message);
+        }
+      });
+    });
   }
 
   async getProvider(userId, connectionId = null) {
@@ -163,6 +187,13 @@ class UnifiedWhatsAppService {
       templateId
     } = messageParams;
 
+    if (contactId && !messageParams.ignoreUnsubscribe) {
+      const contact = await Contact.findById(contactId);
+      if (contact?.is_unsubscribed) {
+        throw new Error('Contact has unsubscribed and cannot receive messages.');
+      }
+    }
+
     if (contactId && !recipientNumber) {
       const contact = await Contact.findById(contactId);
       if (contact) {
@@ -193,6 +224,8 @@ class UnifiedWhatsAppService {
             mediaUrl = material.file_path;
             if (material.content) messageText = material.content;
           }
+        } else {
+          console.error(`[UnifiedService] ReplyMaterial not found for ID: ${replyId}`);
         }
       } else if (replyType === 'Template' || replyType === 'template') {
         const template = await Template.findById(replyId);
@@ -218,18 +251,34 @@ class UnifiedWhatsAppService {
 
     let templateComponents = templateComponentsInput || [];
     if (messageType === 'template' && templateName) {
+      const template = messageParams.templateObj
+        || await Template.findOne({ template_name: templateName, user_id: userId, deleted_at: null }).lean()
+        || await Template.findOne({ template_name: templateName, deleted_at: null }).lean();
+
       if (templateComponents.length === 0) {
-        if (mediaUrl) {
-          let mediaType = 'image';
-          if (mediaUrl.endsWith('.mp4') || mediaUrl.includes('video')) mediaType = 'video';
-          else if (mediaUrl.endsWith('.mp3') || mediaUrl.includes('audio')) mediaType = 'audio';
-          else if (mediaUrl.endsWith('.pdf') || mediaUrl.includes('document')) mediaType = 'document';
+        let finalHeaderUrl = mediaUrl;
+        let headerType = null;
+
+        if (!finalHeaderUrl && template?.header && ['IMAGE', 'VIDEO', 'DOCUMENT', 'MEDIA'].includes((template.header.format || '').toUpperCase())) {
+          finalHeaderUrl = template.header.media_url;
+          headerType = (template.header.media_type || template.header.format || 'image').toLowerCase();
+          if (headerType === 'media') headerType = 'image'; 
+          console.log(`[UnifiedService] Auto-injecting template header from DB: ${headerType} -> ${finalHeaderUrl}`);
+        }
+
+        if (finalHeaderUrl) {
+          let mediaType = headerType || 'image';
+          if (!headerType) {
+            if (finalHeaderUrl.endsWith('.mp4') || finalHeaderUrl.includes('video')) mediaType = 'video';
+            else if (finalHeaderUrl.endsWith('.mp3') || finalHeaderUrl.includes('audio')) mediaType = 'audio';
+            else if (finalHeaderUrl.endsWith('.pdf') || finalHeaderUrl.includes('document')) mediaType = 'document';
+          }
 
           templateComponents.push({
             type: 'header',
             parameters: [{
               type: mediaType,
-              [mediaType]: { link: mediaUrl }
+              [mediaType]: { link: finalHeaderUrl }
             }]
           });
         }
@@ -246,10 +295,6 @@ class UnifiedWhatsAppService {
             parameters: bodyParams
           });
         }
-
-        const template = messageParams.templateObj
-          || await Template.findOne({ template_name: templateName, user_id: userId, deleted_at: null }).lean()
-          || await Template.findOne({ template_name: templateName, deleted_at: null }).lean();
 
         if (template) {
           if (!messageParams.templateId) {
@@ -558,11 +603,10 @@ class UnifiedWhatsAppService {
   }
 
 
-  async getRecentChats(userId, providerType = null, connectionId = null, connection = null) {
+  async getRecentChats(userId, providerType = null, connectionId = null, connection = null, options = {}) {
     if (connection) {
-
       const type = connection.provider || (connection.access_token ? PROVIDER_TYPES.BUSINESS_API : PROVIDER_TYPES.BAILEY);
-      return await this.providers[type].getRecentChats(userId, connection);
+      return await this.providers[type].getRecentChats(userId, connection, options);
     }
 
     let providerInfo;
@@ -572,7 +616,7 @@ class UnifiedWhatsAppService {
       providerInfo = await this.getProvider(userId, connectionId);
     }
 
-    return await providerInfo.provider.getRecentChats(userId, providerInfo.connection);
+    return await providerInfo.provider.getRecentChats(userId, providerInfo.connection, options);
   }
 
 

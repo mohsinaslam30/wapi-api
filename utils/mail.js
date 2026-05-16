@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import { Setting } from '../models/index.js';
 
-const sendMail = async (to, subject, html) => {
+const sendMail = async (to, subject, html, attachments = []) => {
   try {
     const settings = await Setting.findOne().sort({ created_at: -1 }).lean();
     if (!settings) throw new Error('SMTP settings not found.');
@@ -20,7 +20,7 @@ const sendMail = async (to, subject, html) => {
     const fromEmail = settings.mail_from_email || settings.smtp_user;
     const from = `${fromName} <${fromEmail}>`;
 
-    await transporter.sendMail({ from: from, to, subject, html });
+    await transporter.sendMail({ from: from, to, subject, html, attachments });
     return true;
   } catch (err) {
     console.error('Error sending mail:', err);

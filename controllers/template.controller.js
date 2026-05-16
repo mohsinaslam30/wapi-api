@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import axios from "axios";
 import { getWhatsAppTypeFromMime, getWhatsAppMediaUrl } from "../utils/uploadMediaToWhatsapp.js";
+import { saveBufferLocally, downloadAndStoreMedia } from "../utils/whatsapp-message-handler.js";
 import { callAIModel as commonCallAIModel } from '../utils/ai-utils.js';
 
 const API_VERSION = "v21.0";
@@ -151,15 +152,20 @@ export const createTemplate = async (req, res) => {
             mime_type: uploadedFile.mimetype,
             buffer: buffer,
           });
-          console.log("handle", handle);
+          
+          const mediaType = getWhatsAppTypeFromMime(uploadedFile.mimetype);
+          const localUrl = await saveBufferLocally(buffer, uploadedFile.mimetype, mediaType, userId);
+          
+          console.log("handle", handle, "localUrl", localUrl);
           header = {
             format: "media",
-            media_type: getWhatsAppTypeFromMime(uploadedFile.mimetype),
+            media_type: mediaType,
+            media_url: localUrl,
             handle: handle,
           };
         }
       }
-      if (req.body.header_text) {
+      if (req.body.header_text && !header) {
         header = {
           format: "text",
           text: req.body.header_text,
@@ -317,7 +323,7 @@ export const createTemplate = async (req, res) => {
       category: normalizedCategory,
       call_permission,
       header,
-      message_body: isAuthenticationCategory ? "" : message_body,
+      message_body: message_body,
       is_limited_time_offer,
       offer_text,
       has_expiration,
@@ -374,9 +380,11 @@ export const createTemplate = async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating template:", error);
+    const errData = error.response?.data?.error;
+    const errorMsg = errData?.error_user_title || errData?.error_user_msg || errData?.message || error.message;
     return res.status(400).json({
-      message: error.response?.data.error.error_user_msg || error.message,
-      error: error.response?.data.error.error_user_msg || error.message,
+      message: errorMsg,
+      error: errorMsg,
     });
   }
 };
@@ -432,18 +440,24 @@ function buildAuthenticationTemplatePayload(template) {
     add_security_recommendation: auth.add_security_recommendation !== false,
   };
 
+  if (template.category !== "AUTHENTICATION") {
+    bodyComponent.text = template.message_body || "";
+  }
+
   const bodyVariables = template.body_variables || [];
   const hasVariables = bodyVariables.length > 0;
   if (hasVariables) {
     const isPositional = bodyVariables.every((v) => /^\d+$/.test(v.key));
     if (isPositional) {
+      const limit = template.category === "AUTHENTICATION" ? 1 : bodyVariables.length;
       bodyComponent.example = {
-        body_text: [bodyVariables.map((v) => String(v.example || "example"))],
+        body_text: [bodyVariables.slice(0, limit).map((v) => String(v.example || "example"))],
       };
     } else {
       bodyComponent.example = {
         body_text_named_params: bodyVariables.map((v) => ({
           param_name: String(v.key),
+
           example: String(v.example || "example"),
         })),
       };
@@ -523,36 +537,36 @@ export const buildMetaTemplatePayload = (template) => {
 
 
       if (template.header.media_type === "image") {
-        if (template.header.media_url) {
+        if (template.header.media_url && template.header.media_url.startsWith("http")) {
           component.example = {
-            header_url: template.header.media_url,
+            header_url: [template.header.media_url],
           };
-        } else {
+        } else if (template.header.handle) {
           component.example = {
             header_handle: [template.header.handle],
           };
         }
       } else if (template.header.media_type === "video") {
-        if (template.header.media_url) {
+        if (template.header.media_url && template.header.media_url.startsWith("http")) {
           component.example = {
-            header_url: template.header.media_url,
+            header_url: [template.header.media_url],
           };
-        } else {
+        } else if (template.header.handle) {
           component.example = {
             header_handle: [template.header.handle],
           };
         }
       } else if (template.header.media_type === "document") {
-        if (template.header.media_url) {
+        if (template.header.media_url && template.header.media_url.startsWith("http")) {
           component.example = {
-            header_url: template.header.media_url,
+            header_url: [template.header.media_url],
           };
-        } else {
+        } else if (template.header.handle) {
           component.example = {
             header_handle: [template.header.handle],
           };
         }
-      } else {
+      } else if (template.header.handle) {
         component.example = {
           header_handle: [template.header.handle],
         };
@@ -619,40 +633,38 @@ export const buildMetaTemplatePayload = (template) => {
     const quickReplyButtons = [];
 
     template.buttons.forEach((btn) => {
-      if (btn.type === "phone_call") {
+      const type = (btn.type || "").toLowerCase();
+      if (type === "phone_call") {
+        let phoneNumber = btn.phone_number || "";
+        if (phoneNumber && !phoneNumber.startsWith("+")) {
+          phoneNumber = "+" + phoneNumber;
+        }
         ctaButtons.push({
           type: "PHONE_NUMBER",
           text: btn.text,
-          phone_number: btn.phone_number,
+          phone_number: phoneNumber,
         });
-      } else if (btn.type === "website") {
+      } else if (type === "website" || type === "url") {
         ctaButtons.push({
           type: "URL",
           text: btn.text,
-          url: btn.website_url,
+          url: btn.url || btn.website_url,
         });
-      } else if (btn.type === "quick_reply") {
+      } else if (type === "copy_code") {
+        ctaButtons.push({
+          type: "COPY_CODE",
+          example: btn.example || btn.text,
+        });
+      } else if (type === "quick_reply") {
         quickReplyButtons.push({
           type: "QUICK_REPLY",
           text: btn.text,
         });
-      } else if (btn.type === "catalog") {
+      } else if (type === "catalog") {
         quickReplyButtons.push({
           type: "CATALOG",
           text: btn.text,
-        })
-      } else if (btn.type === "copy_code") {
-        quickReplyButtons.push({
-          type: "copy_code",
-          example: btn.text,
-        })
-      }
-      else if (btn.type === "url") {
-        quickReplyButtons.push({
-          type: "URL",
-          text: btn.text,
-          url: btn.url,
-        })
+        });
       }
     });
 
@@ -994,6 +1006,26 @@ export const syncTemplatesFromMeta = async (req, res) => {
       try {
         const doc = metaTemplateToDbDocument(metaTemplate, waba_id, userId);
 
+        // Mirror media if it's a remote URL
+        if (doc.header && doc.header.format === 'media' && doc.header.media_url && doc.header.media_url.startsWith('http')) {
+          try {
+            console.log(`[Sync] Mirroring media for template ${doc.template_name}: ${doc.header.media_url}`);
+            const localUrl = await downloadAndStoreMedia(
+              doc.header.media_url,
+              waba.access_token,
+              doc.header.media_type === 'image' ? 'image/png' : (doc.header.media_type === 'video' ? 'video/mp4' : 'application/pdf'),
+              doc.header.media_type,
+              userId
+            );
+            if (localUrl) {
+              console.log(`[Sync] Media mirrored successfully to: ${localUrl}`);
+              doc.header.media_url = localUrl;
+            }
+          } catch (mirrorErr) {
+            console.error(`[Sync] Failed to mirror media for ${doc.template_name}:`, mirrorErr.message);
+          }
+        }
+
         const existing = await Template.findOne({
           user_id: userId,
           meta_template_id: metaTemplate.id,
@@ -1156,13 +1188,35 @@ const fetchTemplatesFromMeta = async (wabaId, accessToken) => {
   return response.data.data || [];
 };
 
+const reconstructAuthBody = (components) => {
+  const bodyComponent = findComponent(components, "BODY");
+  if (bodyComponent && bodyComponent.text) {
+    return bodyComponent.text;
+  }
+
+  // Fallback if Meta doesn't return the text for some reason
+  let text = "{{1}} is your verification code.";
+  const authOptions = components.find(c => c.type === "BODY")?.add_security_recommendation;
+  
+  if (authOptions !== false) {
+    text += " For your security, do not share this code.";
+  }
+
+  return text;
+};
+
+
 const extractBodyText = (components) => {
   const bodyComponent = findComponent(components, "BODY");
   return bodyComponent ? bodyComponent.text : "";
 };
 
-const extractVariablesFromComponents = (components) => {
+const extractVariablesFromComponents = (components, isAuth = false) => {
   const bodyComponent = findComponent(components, "BODY");
+
+  if (isAuth) {
+    return [{ key: "1", example: "123456" }];
+  }
 
   if (!bodyComponent || !bodyComponent.text) return [];
 
@@ -1203,8 +1257,11 @@ const extractHeader = (components) => {
 
   if (["IMAGE", "VIDEO", "DOCUMENT"].includes(format)) {
     const example = headerComponent.example || {};
-    const handle = example.header_handle?.[0] || example.header_handle;
-    const url = example.header_url;
+    const handle = example.header_handle?.[0] || example.header_handle || headerComponent.handle;
+    const url = example.header_url || example.url || headerComponent.url || headerComponent.header_url;
+    
+    console.log(`[extractHeader] Media header found. Format: ${format}, Handle: ${handle}, URL: ${url}`);
+    
     return {
       format: "media",
       media_type: format.toLowerCase(),
@@ -1410,8 +1467,8 @@ const metaTemplateToDbDocument = (metaTemplate, wabaId, userId) => {
     meta_template_id: metaTemplate.id,
     rejection_reason: metaTemplate.rejected_reason || null,
     template_type,
-    message_body: isAuth ? "" : extractBodyText(components),
-    body_variables: extractVariablesFromComponents(components),
+    message_body: isAuth ? reconstructAuthBody(components) : extractBodyText(components),
+    body_variables: extractVariablesFromComponents(components, isAuth),
     header: isCarousel ? null : extractHeader(components),
     footer_text: extractFooterText(components),
     buttons: isCarousel ? [] : extractButtons(components),
@@ -1561,9 +1618,15 @@ export const updateTemplate = async (req, res) => {
           mime_type: uploadedFile.mimetype,
           buffer: buffer,
         });
+
+        // Save a local copy for stable sending later
+        const mediaType = getWhatsAppTypeFromMime(uploadedFile.mimetype);
+        const localUrl = await saveBufferLocally(buffer, uploadedFile.mimetype, mediaType, userId);
+
         updateData.header = {
           format: "media",
-          media_type: getWhatsAppTypeFromMime(uploadedFile.mimetype),
+          media_type: mediaType,
+          media_url: localUrl,
           handle: handle,
         };
       }
@@ -1616,7 +1679,7 @@ export const updateTemplate = async (req, res) => {
     if (category) updateData.category = category;
     if (message_body) {
       const isAuthenticationCategory = (category || "").toUpperCase() === "AUTHENTICATION";
-      updateData.message_body = isAuthenticationCategory ? "" : message_body;
+      updateData.message_body = message_body;
 
       const extractedVariables = extractVariables(message_body);
       console.log("Extracted variables from message body:", extractedVariables);
@@ -1693,14 +1756,20 @@ export const updateTemplate = async (req, res) => {
       updateData.authentication_options = authUpdates;
     }
 
-    if (header_text !== undefined) {
-      if (header_text === null || header_text === '') {
+    if (header_text !== undefined && !updateData.header) {
+      const isCurrentlyMedia = template.header && template.header.format === "media";
+      
+      if (header_text && header_text.trim() !== '') {
+        // Only overwrite if it's not already a media template, 
+        // or if the user is explicitly providing header_text while no media is present.
+        if (!isCurrentlyMedia) {
+          updateData.header = {
+            format: "text",
+            text: header_text,
+          };
+        }
+      } else if (header_text === null) {
         updateData.header = null;
-      } else {
-        updateData.header = {
-          format: "text",
-          text: header_text,
-        };
       }
     }
 
@@ -1792,7 +1861,7 @@ export const updateTemplate = async (req, res) => {
         console.error("Full error response:", JSON.stringify(metaError.response?.data, null, 2));
         return res.status(400).json({
           success: false,
-          message: error.response?.data.error.error_user_msg || error.message,
+          message: metaError.response?.data?.error?.error_user_msg || metaError.message,
           error: metaError.response?.data?.error?.message || metaError.message,
           error_details: metaError.response?.data || null,
           local_template_updated: true,
@@ -1906,9 +1975,11 @@ export const deleteTemplate = async (req, res) => {
 
   } catch (error) {
     console.error("Error deleting template:", error);
+    const errData = error.response?.data?.error;
+    const errorMsg = errData?.error_user_title || errData?.error_user_msg || errData?.message || error.message;
     return res.status(500).json({
       success: false,
-      message: error.response?.data.error.error_user_msg || error.message,
+      message: errorMsg,
       error: "Failed to delete template",
       details: error.message
     });

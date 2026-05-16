@@ -373,30 +373,30 @@ export const processCampaignMessageJob = async (jobData) => {
           });
         } else if (btn.type === 'url') {
 
-        const isDynamicUrl = typeof btn.url === 'string' && btn.url.includes('{{');
+          const isDynamicUrl = typeof btn.url === 'string' && btn.url.includes('{{');
 
-        if (!isDynamicUrl) {
-          return;
+          if (!isDynamicUrl) {
+            return;
+          }
+
+          const urlValue =
+            templateVariables?.url ??
+            templateVariables?.['1'] ??
+            Object.values(templateVariables || {}).find(
+              v => typeof v === 'string' && /^https?:\/\//.test(v)
+            );
+
+          if (urlValue) {
+            templateComponents.push({
+              type: 'button',
+              sub_type: 'url',
+              index: btnIndex.toString(),
+              parameters: [
+                { type: 'text', text: String(urlValue) }
+              ]
+            });
+          }
         }
-
-        const urlValue =
-          templateVariables?.url ??
-          templateVariables?.['1'] ??
-          Object.values(templateVariables || {}).find(
-            v => typeof v === 'string' && /^https?:\/\//.test(v)
-          );
-
-        if (urlValue) {
-          templateComponents.push({
-            type: 'button',
-            sub_type: 'url',
-            index: btnIndex.toString(),
-            parameters: [
-              { type: 'text', text: String(urlValue) }
-            ]
-          });
-        }
-      }
       });
     }
 
@@ -410,7 +410,8 @@ export const processCampaignMessageJob = async (jobData) => {
       userId: userId,
       whatsappPhoneNumber: selectedPhoneNumber,
       contactId: recipient.contact_id,
-      fromCampaignSystem: true
+      fromCampaignSystem: true,
+      ignoreUnsubscribe: campaign.avoid_unsubscribers === false
     };
 
     console.log('Template components for sending:', templateComponents);

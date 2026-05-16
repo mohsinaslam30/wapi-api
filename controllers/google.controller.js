@@ -1,5 +1,5 @@
 import { GoogleAccount, GoogleCalendar, GoogleSheet } from '../models/index.js';
-import { getOAuth2Client, SCOPES, getCalendarClient, getSheetsClient, handleGoogleApiError } from '../utils/google-api-helper.js';
+import { getOAuth2Client, SCOPES, getCalendarClient, getSheetsClient, getAuthenticatedClient, handleGoogleApiError } from '../utils/google-api-helper.js';
 import { encrypt, decrypt } from '../utils/encryption-utils.js';
 import { google } from 'googleapis';
 
@@ -9,10 +9,12 @@ export const connect = async (req, res) => {
     const oauth2Client = getOAuth2Client();
     const url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      scope: SCOPES,
+      scope: SCOPES.join(' '),
       prompt: 'consent',
-      state: req.user.id
+      state: req.user.id,
+      include_granted_scopes: true
     });
+    console.log(`[Google Connect] Generated Auth URL for User ID: ${req.user.id}`);
     res.json({ success: true, url });
   } catch (error) {
     console.error('Google connect error:', error);
@@ -29,13 +31,15 @@ export const callback = async (req, res) => {
     }
 
     const userId = state;
+    console.log(`[Google Callback] Received callback for User ID: ${userId}`);
     const oauth2Client = getOAuth2Client();
     const { tokens } = await oauth2Client.getToken(code);
-
+    console.log(`[Google Callback] Scopes granted by Google: ${tokens.scope}`);
     oauth2Client.setCredentials(tokens);
 
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const userInfo = await oauth2.userinfo.get();
+    console.log(`[Google Callback] Authenticated email: ${userInfo.data.email}`);
     const email = userInfo.data.email;
 
     const googleAccount = await GoogleAccount.findOneAndUpdate(
@@ -45,17 +49,18 @@ export const callback = async (req, res) => {
         refresh_token: encrypt(tokens.refresh_token),
         expires_at: new Date(tokens.expiry_date),
         scopes: tokens.scope ? tokens.scope.split(' ') : SCOPES,
-        status: 'active'
+        status: 'active',
+        deleted_at: null
       },
       { upsert: true, returnDocument: 'after' }
     );
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}/google-integration?success=true`);
+    res.redirect(`${frontendUrl}/google_account?success=true`);
   } catch (error) {
     console.error('Google callback error:', error);
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}/google-integration?success=false&message=${encodeURIComponent(error.message)}`);
+    res.redirect(`${frontendUrl}/google_account?success=false&message=${encodeURIComponent(error.message)}`);
   }
 };
 
@@ -161,9 +166,10 @@ export const createCalendar = async (req, res) => {
 
 
 export const deleteCalendar = async (req, res) => {
+  const { id } = req.params;
+  let cal;
   try {
-    const { id } = req.params;
-    const cal = await GoogleCalendar.findById(id);
+    cal = await GoogleCalendar.findById(id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
     const calendarClient = await getCalendarClient(cal.google_account_id);
@@ -184,8 +190,9 @@ export const deleteCalendar = async (req, res) => {
 
 export const listEvents = async (req, res) => {
   const { calendar_id } = req.params;
+  let cal;
   try {
-    const cal = await GoogleCalendar.findById(calendar_id);
+    cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
     const calendarClient = await getCalendarClient(cal.google_account_id);
@@ -219,9 +226,10 @@ export const listEvents = async (req, res) => {
 
 export const createEvent = async (req, res) => {
   const { calendar_id } = req.params;
+  let cal;
   try {
     const { summary, description, start, end } = req.body;
-    const cal = await GoogleCalendar.findById(calendar_id);
+    cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
     const calendarClient = await getCalendarClient(cal.google_account_id);
@@ -246,9 +254,10 @@ export const createEvent = async (req, res) => {
 
 export const updateEvent = async (req, res) => {
   const { calendar_id, event_id } = req.params;
+  let cal;
   try {
     const { summary, description, start, end } = req.body;
-    const cal = await GoogleCalendar.findById(calendar_id);
+    cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
     const calendarClient = await getCalendarClient(cal.google_account_id);
@@ -274,8 +283,9 @@ export const updateEvent = async (req, res) => {
 
 export const deleteEvent = async (req, res) => {
   const { calendar_id, event_id } = req.params;
+  let cal;
   try {
-    const cal = await GoogleCalendar.findById(calendar_id);
+    cal = await GoogleCalendar.findById(calendar_id);
     if (!cal) return res.status(404).json({ success: false, message: 'Calendar not found' });
 
     const calendarClient = await getCalendarClient(cal.google_account_id);
@@ -306,6 +316,51 @@ export const listSheets = async (req, res) => {
 };
 
 
+export const syncSheets = async (req, res) => {
+  const { google_account_id, sheets } = req.body;
+
+  if (!google_account_id) {
+    return res.status(400).json({ success: false, message: 'google_account_id is required in body' });
+  }
+
+  try {
+    const auth = await getAuthenticatedClient(google_account_id);
+
+    if (!sheets || !Array.isArray(sheets) || sheets.length === 0) {
+      const driveClient = google.drive({ version: 'v3', auth });
+      const response = await driveClient.files.list({
+        q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+        fields: 'files(id, name)',
+      });
+      return res.json({ success: true, mode: 'list', sheets: response.data.files });
+    }
+
+
+    const syncedSheets = [];
+    for (const sheet of sheets) {
+      const updatedSheet = await GoogleSheet.findOneAndUpdate(
+        { google_account_id, sheet_id: sheet.id },
+        { name: sheet.name, deleted_at: null, is_linked: true },
+        { upsert: true, new: true }
+      );
+      syncedSheets.push(updatedSheet);
+    }
+
+    res.json({
+      success: true,
+      mode: 'sync',
+      message: `${syncedSheets.length} sheets synced successfully`,
+      sheets: syncedSheets
+    });
+  } catch (error) {
+    console.error('Google Sheets sync error:', error);
+    const wasHandled = await handleGoogleApiError(error, google_account_id);
+    const message = wasHandled ? 'Google account unauthorized or expired. Please reconnect.' : error.message;
+    res.status(500).json({ success: false, message });
+  }
+};
+
+
 export const createSheet = async (req, res) => {
   const { google_account_id } = req.params;
   try {
@@ -332,9 +387,10 @@ export const createSheet = async (req, res) => {
 
 export const readSheet = async (req, res) => {
   const { sheet_id } = req.params;
+  let sheet;
   try {
     const { range } = req.query;
-    const sheet = await GoogleSheet.findById(sheet_id);
+    sheet = await GoogleSheet.findById(sheet_id);
     if (!sheet) return res.status(404).json({ success: false, message: 'Sheet not found' });
 
     const sheetsClient = await getSheetsClient(sheet.google_account_id);
@@ -354,9 +410,10 @@ export const readSheet = async (req, res) => {
 
 export const writeSheet = async (req, res) => {
   const { sheet_id } = req.params;
+  let sheet;
   try {
     const { range, values } = req.body;
-    const sheet = await GoogleSheet.findById(sheet_id);
+    sheet = await GoogleSheet.findById(sheet_id);
     if (!sheet) return res.status(404).json({ success: false, message: 'Sheet not found' });
 
     const sheetsClient = await getSheetsClient(sheet.google_account_id);
@@ -376,6 +433,90 @@ export const writeSheet = async (req, res) => {
   }
 };
 
+export const deleteSheet = async (req, res) => {
+  const { id } = req.params;
+  const { delete_from } = req.query;
+  let sheet;
+
+  try {
+    sheet = await GoogleSheet.findById(id);
+    if (!sheet) {
+      return res.status(404).json({ success: false, message: 'Sheet not found' });
+    }
+
+    if (delete_from === 'google') {
+      const auth = await getAuthenticatedClient(sheet.google_account_id);
+      const driveClient = google.drive({ version: 'v3', auth });
+
+      await driveClient.files.update({
+        fileId: sheet.sheet_id,
+        requestBody: { trashed: true }
+      });
+    }
+
+    sheet.deleted_at = new Date();
+    await sheet.save();
+
+    res.json({
+      success: true,
+      message: delete_from === 'google'
+        ? 'Sheet deleted from both Google Drive and Platform'
+        : 'Sheet removed from Platform only'
+    });
+  } catch (error) {
+    console.error('Delete Google sheet error:', error);
+    const wasHandled = await handleGoogleApiError(error, sheet?.google_account_id);
+    const message = wasHandled ? 'Google account unauthorized or expired. Please reconnect.' : error.message;
+    res.status(500).json({ success: false, message });
+  }
+};
+
+export const bulkDeleteSheets = async (req, res) => {
+  const { ids, delete_from } = req.body;
+
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ success: false, message: 'No IDs provided for bulk delete' });
+  }
+
+  try {
+    const results = { success: [], failed: [] };
+
+    for (const id of ids) {
+      try {
+        const sheet = await GoogleSheet.findById(id);
+        if (!sheet) {
+          results.failed.push({ id, message: 'Sheet not found' });
+          continue;
+        }
+
+        if (delete_from === 'google') {
+          const auth = await getAuthenticatedClient(sheet.google_account_id);
+          const driveClient = google.drive({ version: 'v3', auth });
+          await driveClient.files.update({
+            fileId: sheet.sheet_id,
+            requestBody: { trashed: true }
+          });
+        }
+
+        sheet.deleted_at = new Date();
+        await sheet.save();
+        results.success.push(id);
+      } catch (err) {
+        results.failed.push({ id, message: err.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully deleted ${results.success.length} sheets`,
+      results
+    });
+  } catch (error) {
+    console.error('Bulk delete sheets error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export default {
   connect,
   callback,
@@ -390,7 +531,10 @@ export default {
   updateEvent,
   deleteEvent,
   listSheets,
+  syncSheets,
   createSheet,
   readSheet,
-  writeSheet
+  writeSheet,
+  deleteSheet,
+  bulkDeleteSheets
 };

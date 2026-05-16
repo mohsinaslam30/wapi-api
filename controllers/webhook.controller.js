@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Subscription, PaymentHistory, User, Plan } from '../models/index.js';
+import EmailTemplateService from '../services/email-template.service.js';
 import { stripe, getStripe, PayPalService } from '../utils/payment-gateway.service.js';
 import { RazorpayService, calculatePeriodEnd } from '../utils/payment-gateway.service.js';
 import { generateInvoiceNumber } from '../utils/invoice-helper.js';
@@ -294,6 +295,8 @@ const handleInvoicePaymentSucceeded = async (invoice) => {
             paid_at: new Date()
         });
 
+        await EmailTemplateService.sendActivationEmail(subscription);
+
         console.log('Payment processed successfully for subscription:', subscription._id);
     } catch (error) {
         console.error('Error handling invoice.payment_succeeded:', error);
@@ -388,6 +391,7 @@ const handleCheckoutSessionCompleted = async (session) => {
                     existingSubscription.current_period_end = periodEnd;
                 }
                 await existingSubscription.save();
+                await EmailTemplateService.sendActivationEmail(existingSubscription);
                 console.log('[Stripe webhook] Subscription updated from checkout:', existingSubscription._id);
                 return;
             }
@@ -499,6 +503,8 @@ const handleCheckoutSessionCompleted = async (session) => {
                 await User.findByIdAndUpdate(userId, { stripe_customer_id: stripeCustomerId });
             }
 
+            await EmailTemplateService.sendActivationEmail(subscription);
+
             console.log('[Stripe webhook] Pending subscription updated. subscriptionId:', subscription._id, 'userId:', userId, 'plan:', plan.name, 'session:', sessionId);
         } else {
             const newSubscription = await Subscription.create({
@@ -541,6 +547,8 @@ const handleCheckoutSessionCompleted = async (session) => {
                 taxes: plan.taxes || [],
                 paid_at: now
             });
+
+            await EmailTemplateService.sendActivationEmail(newSubscription);
 
             console.log('[Stripe webhook] Subscription created from payment link. subscriptionId:', newSubscription._id, 'userId:', userId, 'plan:', plan.name, 'session:', sessionId);
         }
@@ -654,6 +662,7 @@ const handleRazorpaySubscriptionActivated = async (razorpaySubscription) => {
                 );
             }
             await subscription.save();
+            await EmailTemplateService.sendActivationEmail(subscription);
             console.log('Subscription activated:', subscription._id);
 
             await cancelOtherActiveSubscriptions(subscription.user_id, subscription._id);
@@ -706,6 +715,8 @@ const handleRazorpaySubscriptionCharged = async (razorpaySubscription, payment) 
             taxes: subscription.taxes || [],
             paid_at: new Date()
         });
+
+        await EmailTemplateService.sendActivationEmail(subscription);
 
         console.log('Payment processed successfully for subscription:', subscription._id);
     } catch (error) {
@@ -868,6 +879,7 @@ export const handlePayPalWebhook = async (req, res) => {
                     subscription.current_period_end = new Date(resource.billing_info.next_billing_time);
                 }
                 await subscription.save();
+                await EmailTemplateService.sendActivationEmail(subscription);
                 console.log(`Subscription ${subscription._id} activated via PayPal`);
 
                 await cancelOtherActiveSubscriptions(subscription.user_id, subscription._id);
@@ -897,6 +909,8 @@ export const handlePayPalWebhook = async (req, res) => {
                     taxes: subscription.taxes || [],
                     paid_at: new Date()
                 });
+
+                await EmailTemplateService.sendActivationEmail(subscription);
                 console.log(`Payment recorded for subscription ${subscription._id} via PayPal`);
 
                 await cancelOtherActiveSubscriptions(subscription.user_id, subscription._id);

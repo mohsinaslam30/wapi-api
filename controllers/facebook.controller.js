@@ -140,7 +140,7 @@ export const handleFacebookCallback = async (req, res) => {
         long_lived_access_token: accessToken,
         is_active: true
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     let pages = [];
@@ -402,7 +402,7 @@ export const updateFacebookDefaults = async (req, res) => {
           default_page_id: default_page_id || null
         }
       },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!connection) {

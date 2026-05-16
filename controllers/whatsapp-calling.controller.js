@@ -6,19 +6,33 @@ class WhatsappCallingController {
     async getCallSettings(req, res) {
         try {
             const { phone_number_id } = req.query;
+
+            const phone = await WhatsappPhoneNumber.findOne({
+                _id: phone_number_id,
+                user_id: req.user._id,
+                deleted_at: null
+            });
+
+            if (!phone) {
+                return res.status(404).json({ message: 'Phone number not found' });
+            }
+
             const settings = await WhatsappCallSetting.findOne({
-                phone_number_id,
+                phone_number_id: phone.phone_number_id,
                 user_id: req.user._id,
                 deleted_at: null
             }).populate('fallback_agent_id');
 
             if (!settings) {
-                return res.status(404).json({ message: 'Call settings not found for this phone number' });
+                return res.status(404).json({ message: 'No settings found for this phone number.' });
             }
 
-            res.status(200).json(settings);
+            res.status(200).json({
+                success: true,
+                data: settings
+            });
         } catch (error) {
-            res.status(500).json({ message: error.message });
+            res.status(500).json({ success: false, message: error.message });
         }
     }
 
@@ -27,47 +41,49 @@ class WhatsappCallingController {
             const { phone_number_id, ...updateData } = req.body;
             const userId = req.user._id;
 
-
-            console.log("phone_number_id" , phone_number_id , userId);
             const phone = await WhatsappPhoneNumber.findOne({
                 _id: phone_number_id,
                 user_id: userId,
                 deleted_at: null
             });
-            console.log("phone" , phone);
 
             if (!phone) {
                 return res.status(403).json({
+                    success: false,
                     message: 'Forbidden: You do not own this phone number or it does not exist.'
                 });
             }
 
             let settings = await WhatsappCallSetting.findOne({
-                phone_number_id,
+                phone_number_id: phone.phone_number_id,
                 user_id: userId,
                 deleted_at: null
             });
+
             if (settings) {
                 Object.assign(settings, updateData);
                 await settings.save();
             } else {
                 settings = await WhatsappCallSetting.create({
                     ...updateData,
-                    phone_number_id,
+                    phone_number_id: phone.phone_number_id,
                     user_id: userId
                 });
             }
 
             try {
                 console.log("calledd")
-                await whatsappCallingService.updateCallConfig(phone_number_id, settings);
+                await whatsappCallingService.updateCallConfig(phone.phone_number_id, settings);
             } catch (syncError) {
                 console.warn('Failed to sync call settings with WhatsApp:', syncError.message);
             }
 
-            res.status(200).json(settings);
+            res.status(200).json({
+                success: true,
+                data: settings
+            });
         } catch (error) {
-            res.status(500).json({ message: error.message });
+            res.status(500).json({ success: false, message: error.message });
         }
     }
 
@@ -187,7 +203,7 @@ class WhatsappCallingController {
         try {
             const { page = 1, limit = 10, search = '', agentId, contact_id, phone_number_id } = req.query;
             const query = { user_id: req.user._id };
-            
+
             if (agentId) query.agent_id = agentId;
             if (contact_id) query.contact_id = contact_id;
             if (phone_number_id) query.phone_number_id = phone_number_id;

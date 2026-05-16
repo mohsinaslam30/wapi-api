@@ -26,7 +26,7 @@ export const startImpersonation = async (req, res) => {
     const impersonationToken = generateToken({
       id: targetUser._id,
       email: targetUser.email,
-      role: targetUserRole,
+      role: impersonator.role,
       isImpersonated: true,
       impersonatorId: impersonator.id
     });
@@ -37,7 +37,7 @@ export const startImpersonation = async (req, res) => {
       device_info: req.headers['user-agent'] || 'unknown',
       ip_address: req.ip,
       agenda: `impersonation_by_${impersonator.id}`,
-      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       status: 'active',
     });
 
@@ -123,6 +123,7 @@ export const getImpersonationStatus = async (req, res) => {
     return res.status(200).json({
       success: true,
       isImpersonating: !!req.isImpersonating,
+      isSelfTenant: !!req.isSelfTenant,
       impersonatorId: req.isImpersonating ? req.impersonatorId : null,
     });
   } catch (error) {

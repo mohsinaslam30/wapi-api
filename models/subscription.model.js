@@ -13,7 +13,7 @@ const subscriptionSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['active', 'trial', 'expired', 'cancelled', 'suspended', 'pending'],
+        enum: ['active', 'trial', 'expired', 'canceled', 'suspended', 'pending'],
         default: 'trial'
     },
     started_at: {
@@ -157,6 +157,18 @@ const subscriptionSchema = new mongoose.Schema({
         segments_used: {
             type: Number,
             default: 0
+        },
+        facebook_lead_used: {
+            type: Number,
+            default: 0
+        },
+        google_account_used: {
+            type: Number,
+            default: 0
+        },
+        quick_replies_used: {
+            type: Number,
+            default: 0
         }
     },
     auto_renew: {
@@ -204,6 +216,10 @@ const subscriptionSchema = new mongoose.Schema({
         default: null
     },
     features: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null
+    },
+    enabled_features: {
         type: mongoose.Schema.Types.Mixed,
         default: null
     },

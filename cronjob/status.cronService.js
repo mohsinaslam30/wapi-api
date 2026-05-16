@@ -1,5 +1,6 @@
 import cron from 'node-cron';
-import { Subscription } from '../models/index.js';
+import { Subscription, User, Plan } from '../models/index.js';
+import EmailTemplateService from '../services/email-template.service.js';
 
 async function statusCronService() {
     cron.schedule('0 0 * * *', async () => {
@@ -8,37 +9,51 @@ async function statusCronService() {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
-            const cancelledResult = await Subscription.updateMany(
-                {
-                    status: { $in: ['active', 'trial'] },
-                    current_period_end: { $lte: today },
-                    auto_renew: false,
-                    deleted_at: null
-                },
-                {
-                    $set: {
-                        status: 'cancelled',
-                        expires_at: "$current_period_end"
-                    }
-                }
-            );
+            const expiredSubs = await Subscription.find({
+                status: { $in: ['active', 'trial'] },
+                current_period_end: { $lte: today },
+                deleted_at: null
+            }).populate('user_id plan_id');
 
-            const expiredResult = await Subscription.updateMany(
-                {
-                    status: { $in: ['active', 'trial'] },
-                    current_period_end: { $lte: today },
-                    auto_rereturnDocument: 'after',
-                    deleted_at: null
-                },
-                {
-                    $set: {
-                        status: 'expired',
-                        expires_at: "$current_period_end"
-                    }
-                }
-            );
+            for (const sub of expiredSubs) {
+                const oldStatus = sub.status;
+                sub.status = sub.auto_renew ? 'expired' : 'canceled';
+                sub.expires_at = sub.current_period_end;
+                await sub.save();
 
-            console.log(`Successfully processed: ${cancelledResult.modifiedCount} cancelled, ${expiredResult.modifiedCount} expired subscription(s).`);
+                if (sub.user_id && sub.user_id.email) {
+                    await EmailTemplateService.send('plan-expiration', sub.user_id.email, {
+                        user_name: sub.user_id.name,
+                        plan_name: sub.plan_id?.name || 'Your Plan'
+                    });
+                }
+            }
+
+            const reminderDate = new Date();
+            reminderDate.setDate(today.getDate() + 3);
+            reminderDate.setHours(0, 0, 0, 0);
+
+            const upcomingExpirations = await Subscription.find({
+                status: { $in: ['active', 'trial'] },
+                current_period_end: {
+                    $gte: reminderDate,
+                    $lt: new Date(reminderDate.getTime() + 24 * 60 * 60 * 1000)
+                },
+                deleted_at: null
+            }).populate('user_id plan_id');
+
+            for (const sub of upcomingExpirations) {
+                if (sub.user_id && sub.user_id.email) {
+                    await EmailTemplateService.send('plan-renewal', sub.user_id.email, {
+                        user_name: sub.user_id.name,
+                        plan_name: sub.plan_id?.name || 'Your Plan',
+                        days_remaining: 3,
+                        renewal_url: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/billing_plans` : ''
+                    });
+                }
+            }
+
+            console.log(`Processed ${expiredSubs.length} expirations and ${upcomingExpirations.length} reminders.`);
         } catch (error) {
             console.error('Error in subscription expiry cron job:', error);
         }

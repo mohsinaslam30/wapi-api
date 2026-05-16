@@ -58,7 +58,9 @@ const buildSearchQuery = (searchTerm) => {
         $or: [
             { name: { $regex: sanitizedSearch, $options: 'i' } },
             { slug: { $regex: sanitizedSearch, $options: 'i' } },
-            { description: { $regex: sanitizedSearch, $options: 'i' } }
+            { description: { $regex: sanitizedSearch, $options: 'i' } },
+            { category: { $regex: sanitizedSearch, $options: 'i' } },
+            { meta_status: { $regex: sanitizedSearch, $options: 'i' } }
         ]
     };
 };
@@ -73,6 +75,12 @@ const validateFormData = (formData) => {
     }
     if (!formData.category || !formData.category.trim()) {
         errors.push("Category is required");
+    }
+    if (formData.submit_settings && formData.submit_settings.max_submissions_per_user !== undefined) {
+        const maxSub = parseInt(formData.submit_settings.max_submissions_per_user);
+        if (isNaN(maxSub) || maxSub < 1) {
+            errors.push("Max submissions per user must be at least 1");
+        }
     }
     return { isValid: errors.length === 0, errors };
 }
@@ -1273,7 +1281,19 @@ export const updateForm = async (req, res) => {
         }
         if (updateData.description !== undefined) form.description = updateData.description;
         if (updateData.category) form.category = updateData.category;
-        if (updateData.submit_settings) form.submit_settings = { ...form.submit_settings, ...updateData.submit_settings };
+        
+        if (updateData.submit_settings) {
+            if (updateData.submit_settings.max_submissions_per_user !== undefined) {
+                const maxSub = parseInt(updateData.submit_settings.max_submissions_per_user);
+                if (isNaN(maxSub) || maxSub < 1) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Max submissions per user must be at least 1"
+                    });
+                }
+            }
+            form.submit_settings = { ...form.submit_settings, ...updateData.submit_settings };
+        }
 
         if (updateData.fields && Array.isArray(updateData.fields)) {
             form.fields = updateData.fields.map(f => ({

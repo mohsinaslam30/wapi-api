@@ -7,6 +7,7 @@ async function seedDefaultSettings() {
 
     const seedData = {
       app_name: 'Wapi',
+      app_loader: "One And Only",
       app_description: 'Whatsapp Marketing Platform',
       app_email: 'support@example.com',
       support_email: 'support@example.com',
@@ -61,8 +62,10 @@ async function seedDefaultSettings() {
       configuration_id: null,
       max_groups_per_user: 500,
       max_group_members: 1024,
-      whatsapp_webhook_url: `/whatsapp/webhook`,
+      whatsapp_webhook_url: `webhook/whatsapp`,
       webhook_verification_token: process.env.WHATSAPP_VERIFY_TOKEN || null,
+      facebook_lead_webhook_url: `webhook/facebook/leadgen/receive`,
+      facebook_lead_webhook_verify_token: process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN || null,
       free_trial_enabled: false,
       free_trial_days: 7,
       trial_expired_delete_days: 0,

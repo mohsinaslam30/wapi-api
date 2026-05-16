@@ -75,7 +75,7 @@ const userSettingSchema = new mongoose.Schema({
   },
   payment_reminder_delay: {
     type: Number,
-    default: 60 
+    default: 60
   },
   payment_reminder_unit: {
     type: String,
@@ -89,6 +89,22 @@ const userSettingSchema = new mongoose.Schema({
   disable_admin_quick_reply: {
     type: Boolean,
     default: false
+  },
+  whatsapp_optout_keyword: {
+    type: [String],
+    default: ['STOP']
+  },
+  whatsapp_optin_keyword: {
+    type: [String],
+    default: ['START']
+  },
+  whatsapp_unsubscribe_message: {
+    type: String,
+    default: 'You have been unsubscribed and will no longer receive messages. Reply {optin_keywords} to subscribe again.'
+  },
+  whatsapp_resubscribe_message: {
+    type: String,
+    default: 'Welcome back! You have been re-subscribed to our broadcasts.'
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

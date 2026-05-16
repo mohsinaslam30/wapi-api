@@ -143,7 +143,7 @@ const formSchema = new mongoose.Schema({
         },
         max_submissions_per_user: {
             type: Number,
-            default: 0
+            default: 1
         },
         limit_exceeded_message: {
             type: String,
@@ -170,7 +170,7 @@ const formSchema = new mongoose.Schema({
     collection: "forms"
 });
 
-formSchema.index({ user_id: 1, waba_id: 1 }, { unique: true });
+formSchema.index({ user_id: 1, waba_id: 1 });
 formSchema.index({ waba_id: 1, name: 1 });
 
 

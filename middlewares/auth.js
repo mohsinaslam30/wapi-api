@@ -106,6 +106,7 @@ export const authenticate = async (req, res, next) => {
     userObj.id = user._id.toString();
     userObj.role = user.role_id ? user.role_id.name : null;
     userObj.owner_id = userObj.role === 'agent' ? user.created_by : user._id;
+    userObj.isSelfTenant = decoded.isSelfTenant || false;
     req.user = userObj;
     req.token = token;
     req.authType = 'jwt';

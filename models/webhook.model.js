@@ -39,6 +39,12 @@ const WebhookSchema = new mongoose.Schema(
       trim: true
     },
 
+    method: {
+      type: String,
+      enum: ["GET", "POST"],
+      default: "POST"
+    },
+
     template_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Template",
@@ -53,7 +59,7 @@ const WebhookSchema = new mongoose.Schema(
       },
 
       variables: {
-        type: Map,
+        type: Map, 
         of: String,
         default: {}
       }
@@ -88,6 +94,25 @@ const WebhookSchema = new mongoose.Schema(
         type: Boolean,
         default: false
       }
+    },
+
+    merchant_notifications: {
+      is_enabled: {
+        type: Boolean,
+        default: false
+      },
+      template_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Template"
+      },
+      field_mapping: {
+        variables: {
+          type: Map,
+          of: String,
+          default: {}
+        }
+      },
+      recipients: [String]
     },
 
     stats: {
@@ -142,7 +167,7 @@ const WebhookSchema = new mongoose.Schema(
 WebhookSchema.index({ user_id: 1, created_at: -1 });
 // WebhookSchema.index({ webhook_token: 1 });
 
-WebhookSchema.statics.generateWebhookToken = function() {
+WebhookSchema.statics.generateWebhookToken = function () {
   return (
     Math.random().toString(36).substring(2, 15) +
     Math.random().toString(36).substring(2, 15) +
@@ -150,14 +175,14 @@ WebhookSchema.statics.generateWebhookToken = function() {
   );
 };
 
-WebhookSchema.methods.addLog = function(logEntry) {
+WebhookSchema.methods.addLog = function (logEntry) {
   this.recent_logs.unshift(logEntry);
   if (this.recent_logs.length > 10) {
     this.recent_logs = this.recent_logs.slice(0, 10);
   }
 };
 
-WebhookSchema.statics.getNestedValue = function(obj, path) {
+WebhookSchema.statics.getNestedValue = function (obj, path) {
   return path.split('.').reduce((current, key) => {
     return current?.[key];
   }, obj);

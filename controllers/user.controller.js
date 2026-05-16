@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { User, Subscription, Plan, Role, Setting } from "../models/index.js";
+import { User, Subscription, Plan, Role, Setting, Contact } from "../models/index.js";
 import { sendMail } from "../utils/mail.js";
 
 const DEFAULT_PAGE = 1;
@@ -84,8 +84,18 @@ const buildSearchQuery = async (searchTerm) => {
         conditions.push({ _id: { $in: userIds } });
       }
     }
+
+    const matchingRoles = await Role.find({
+      name: regex,
+      deleted_at: null,
+    }).select("_id");
+
+    if (matchingRoles.length > 0) {
+      const roleIds = matchingRoles.map((r) => r._id);
+      conditions.push({ role_id: { $in: roleIds } });
+    }
   } catch (err) {
-    console.error("Error searching by plan name:", err);
+    console.error("Error searching by plan name or role:", err);
   }
 
   return { $or: conditions };
@@ -214,32 +224,34 @@ const buildUserResponseWithPlan = (user, subscriptionMapEntry) => {
     ...baseUser,
     current_subscription: subscription
       ? {
-          _id: subscription._id,
-          status: subscription.status,
-          started_at: subscription.started_at,
-          trial_ends_at: subscription.trial_ends_at,
-          current_period_start: subscription.current_period_start,
-          current_period_end: subscription.current_period_end,
-          expires_at: subscription.expires_at,
-          cancelled_at: subscription.cancelled_at,
-          payment_gateway: subscription.payment_gateway,
-          payment_method: subscription.payment_method,
-          payment_status: subscription.payment_status,
-          auto_renew: subscription.auto_renew,
-          features: subscription.features,
-          is_custom: subscription.is_custom,
-          duration: subscription.duration,
-        }
+        _id: subscription._id,
+        status: subscription.status,
+        started_at: subscription.started_at,
+        trial_ends_at: subscription.trial_ends_at,
+        current_period_start: subscription.current_period_start,
+        current_period_end: subscription.current_period_end,
+        expires_at: subscription.expires_at,
+        cancelled_at: subscription.cancelled_at,
+        payment_gateway: subscription.payment_gateway,
+        payment_method: subscription.payment_method,
+        payment_status: subscription.payment_status,
+        auto_renew: subscription.auto_renew,
+        features: subscription.is_custom ? subscription.features : (plan?.features || subscription.features),
+        enabled_features: subscription.is_custom ? subscription.enabled_features : (plan?.enabled_features || subscription.enabled_features),
+        is_custom: subscription.is_custom,
+        duration: subscription.duration,
+      }
       : null,
     current_plan: plan
       ? {
-          _id: plan._id,
-          name: plan.name,
-          slug: plan.slug,
-          price: plan.price,
-          billing_cycle: plan.billing_cycle,
-          features: plan.features,
-        }
+        _id: plan._id,
+        name: plan.name,
+        slug: plan.slug,
+        price: plan.price,
+        billing_cycle: plan.billing_cycle,
+        features: plan.features,
+        enabled_features: plan.enabled_features,
+      }
       : null,
   };
 };
@@ -491,6 +503,9 @@ export const updateUser = async (req, res) => {
       });
     }
 
+    const originalEmail = user.email;
+    const originalPhone = user.phone;
+
     if (email !== undefined) {
       const normalizedEmail =
         typeof email === "string" ? email.toLowerCase().trim() : email;
@@ -596,6 +611,28 @@ export const updateUser = async (req, res) => {
     }
 
     await user.save();
+    try {
+      const query = { deleted_at: null };
+      const orConditions = [];
+      if (originalEmail) orConditions.push({ email: originalEmail });
+      if (originalPhone) orConditions.push({ phone_number: originalPhone });
+
+      if (orConditions.length > 0) {
+        query.$or = orConditions;
+        await Contact.updateMany(
+          query,
+          { 
+            $set: { 
+              name: user.name,
+              email: user.email,
+              phone_number: user.phone
+            }
+          }
+        );
+      }
+    } catch (syncError) {
+      console.error('Failed to sync user updates to contacts:', syncError);
+    }
 
     const plainUser = user.toObject();
     delete plainUser.password;
@@ -712,6 +749,24 @@ export const createUser = async (req, res) => {
       created_at: newUser.created_at,
       updated_at: newUser.updated_at,
     };
+
+    const superAdmin = await User.findOne({ deleted_at: null }).populate('role_id');
+    const superAdminRoles = await Role.find({ name: 'super_admin' }).distinct('_id');
+    const allSuperAdmins = await User.find({ role_id: { $in: superAdminRoles }, deleted_at: null });
+
+    for (const admin of allSuperAdmins) {
+      await Contact.create({
+        name: trimmedName,
+        email: normalizedEmail,
+        phone_number: trimmedPhone,
+        user_id: admin._id,
+        created_by: admin._id,
+        source: 'whatsapp',
+        status: 'lead'
+      }).catch(err => {
+        if (err.code !== 11000) console.error('Auto contact create error:', err);
+      });
+    }
 
     return res.status(201).json({
       success: true,

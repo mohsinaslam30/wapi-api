@@ -5,6 +5,10 @@ const settingSchema = new mongoose.Schema({
     type: String,
     default: 'Wapi'
   },
+  app_loader: {
+    type: String,
+    default: 'One and Only'
+  },
   app_description: {
     type: String,
     default: 'Whatsapp Marketing Platform'
@@ -249,6 +253,14 @@ const settingSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  facebook_lead_webhook_url: {
+    type: String,
+    default: null
+  },
+  facebook_lead_webhook_verify_token: {
+    type: String,
+    default: null
+  },
   free_trial_enabled: {
     type: Boolean,
     default: false
@@ -302,9 +314,9 @@ const settingSchema = new mongoose.Schema({
     default: true
   },
   connection_method: {
-    type: String,
+    type: [String],
     enum: ['manual', 'qr_scan', 'embedded_signup'],
-    default: 'manual'
+    default: ['manual']
   },
   is_stripe_active: {
     type: Boolean,
@@ -392,9 +404,19 @@ const settingSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  whatsapp_phoneno_id: {
+  otp_delivery_method: {
     type: String,
+    enum: ['email', 'whatsapp'],
+    default: 'email'
+  },
+  whatsapp_otp_template_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Template',
     default: null
+  },
+  whatsapp_otp_variable_mapping: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

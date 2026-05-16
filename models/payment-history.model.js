@@ -26,7 +26,7 @@ const paymentHistorySchema = new mongoose.Schema({
     },
     payment_method: {
         type: String,
-        enum: ['card', 'upi', 'netbanking', 'wallet', 'manual', 'free', 'paypal'],
+        enum: ['card', 'upi', 'netbanking', 'wallet', 'manual', 'free', 'paypal', 'cash', 'bank_transfer'],
         required: true
     },
     payment_status: {

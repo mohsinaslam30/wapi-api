@@ -276,6 +276,13 @@ export const modules = {
         actions: { update: 'update.landing_page', view: 'view.landing_page' },
         roles: { ADMIN: ['update', 'view'] }
     },
+    authPageSetup: {
+        actions: { update: 'update.auth_page_setup', view: 'view.auth_page_setup' },
+        roles: {
+            ADMIN: ['update', 'view'],
+            USER: ['view'],
+        }
+    },
     languages: {
         actions: {
             view: 'view.languages',
@@ -651,7 +658,24 @@ export const modules = {
             ADMIN: ['manage'],
             USER: ['manage']
         }
-    }
+    },
+    selfTenant: {
+        actions: {
+            manage: 'manage.self_tenant'
+        },
+        roles: {
+            ADMIN: ['manage']
+        }
+    },
+    email_templates: {
+        actions: {
+            view: 'view.email_templates',
+            update: 'update.email_templates'
+        },
+        roles: {
+            ADMIN: ['view', 'update']
+        }
+    },
 };
 
 

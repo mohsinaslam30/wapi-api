@@ -158,12 +158,25 @@ export async function downloadAndStoreMedia(url, accessToken, mimeType, fileType
   const safeType = fileType || "other";
   const subfolder = `whatsapp/${safeType}`;
 
-  const response = await axios.get(url, {
-    responseType: "arraybuffer",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
+  let response;
+  try {
+    console.log(`[DownloadMedia] Attempting download from: ${url}`);
+    response = await axios.get(url, {
+      responseType: "arraybuffer",
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+  } catch (err) {
+    if (err.response?.status === 403 && url.includes('scontent.whatsapp.net')) {
+      console.log(`[DownloadMedia] 403 with token, retrying WITHOUT token for Meta CDN URL...`);
+      response = await axios.get(url, {
+        responseType: "arraybuffer"
+      });
+    } else {
+      throw err;
     }
-  });
+  }
 
   const buffer = Buffer.from(response.data);
 

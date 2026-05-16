@@ -20,7 +20,11 @@ import {
   AppointmentBooking,
   FacebookAdCampaign,
   KanbanFunnel,
-  Segment
+  Segment,
+  Workspace,
+  FacebookLead,
+  GoogleAccount,
+  QuickReply
 } from '../models/index.js';
 
 
@@ -44,7 +48,11 @@ const COUNT_FEATURES = [
   'appointment_bookings',
   'facebookAds_campaign',
   'kanban_funnels',
-  'segments'
+  'segments',
+  'workspaces',
+  'facebook_lead',
+  'google_account',
+  'quick_replies'
 ];
 
 const BOOLEAN_FEATURES = [
@@ -52,7 +60,7 @@ const BOOLEAN_FEATURES = [
   'whatsapp_webhook',
   'auto_replies',
   'analytics',
-  'priority_support',
+  'priority_support'
 ];
 
 
@@ -65,7 +73,12 @@ function getUserId(user) {
 
 
 export const requireSubscription = async (req, res, next) => {
-
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
 
   const userId = req.user.owner_id;
 
@@ -79,8 +92,28 @@ export const requireSubscription = async (req, res, next) => {
       .populate('plan_id')
       .lean();
 
-    req.subscription = subscription || null;
-    req.plan = subscription?.plan_id ? subscription.plan_id : null;
+    if (subscription && subscription.plan_id) {
+      req.subscription = subscription;
+      req.plan = subscription.plan_id;
+      if (subscription.is_custom && subscription.features) {
+        req.plan.features = subscription.features;
+      } else if (!subscription.is_custom && subscription.plan_id.features) {
+        req.plan.features = subscription.plan_id.features;
+      } else if (subscription.features) {
+        req.plan.features = subscription.features;
+      }
+    } else {
+      const virtualFeatures = {};
+      COUNT_FEATURES.forEach(f => virtualFeatures[f] = Infinity);
+      BOOLEAN_FEATURES.forEach(f => virtualFeatures[f] = true);
+
+      req.subscription = null;
+      req.plan = {
+        name: 'System Administrator',
+        is_system: true,
+        features: virtualFeatures
+      };
+    }
     return next();
   }
 
@@ -117,19 +150,30 @@ export const requireSubscription = async (req, res, next) => {
 
   req.subscription = subscription;
   req.plan = subscription.plan_id;
+  if (subscription.is_custom && subscription.features) {
+    req.plan.features = subscription.features;
+  } else if (!subscription.is_custom && subscription.plan_id.features) {
+    req.plan.features = subscription.plan_id.features;
+  } else if (subscription.features) {
+    req.plan.features = subscription.features;
+  }
   next();
 };
 
 
 export const requirePlanFeature = (feature) => {
-  if (!BOOLEAN_FEATURES.includes(feature)) {
-    throw new Error(`requirePlanFeature: unknown boolean feature "${feature}"`);
+  if (!BOOLEAN_FEATURES.includes(feature) && !COUNT_FEATURES.includes(feature)) {
+    throw new Error(`requirePlanFeature: unknown feature "${feature}"`);
   }
 
   return (req, res, next) => {
     if (req.user?.role === 'super_admin') return next();
     if (req.isFreeTrial) return next();
-    if (!req.plan?.features || !req.plan.features[feature]) {
+
+    const isEnabledInToggles = req.plan?.enabled_features?.[feature] === true || req.plan?.enabled_features?.[feature] === "true";
+    const isEnabledInBooleans = req.plan?.features?.[feature] === true || req.plan?.features?.[feature] === "true";
+
+    if (!isEnabledInToggles && !isEnabledInBooleans) {
       return res.status(403).json({
         success: false,
         message: `Your plan does not include this feature: ${feature.replace(/_/g, ' ')}`,
@@ -180,6 +224,14 @@ async function getUsageCount(userId, feature, subscription) {
       return KanbanFunnel.countDocuments({ deletedAt: null, userId: uid });
     case 'segments':
       return Segment.countDocuments({ ...baseQuery, user_id: uid });
+    case 'workspaces':
+      return Workspace.countDocuments({ ...baseQuery, user_id: uid });
+    case 'facebook_lead':
+      return FacebookLead.countDocuments({ ...baseQuery, user_id: uid });
+    case 'google_account':
+      return GoogleAccount.countDocuments({ ...baseQuery, user_id: uid });
+    case 'quick_replies':
+      return QuickReply.countDocuments({ ...baseQuery, user_id: uid });
     default:
       return 0;
   }
@@ -252,6 +304,16 @@ export const attachSubscriptionIfAny = async (req, res, next) => {
 
   req.subscription = subscription || null;
   req.plan = subscription?.plan_id || null;
+
+  if (subscription && req.plan) {
+    if (subscription.is_custom && subscription.features) {
+      req.plan.features = subscription.features;
+    } else if (!subscription.is_custom && subscription.plan_id.features) {
+      req.plan.features = subscription.plan_id.features;
+    } else if (subscription.features) {
+      req.plan.features = subscription.features;
+    }
+  }
 
 
   if (!subscription && req.user?.role !== 'super_admin') {

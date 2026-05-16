@@ -10,7 +10,9 @@ import {
   Contact,
   CustomField,
   Tag,
+  Template,
 } from '../models/index.js';
+import UnifiedWhatsAppService from '../services/whatsapp/unified-whatsapp.service.js';
 
 const FB_API_VERSION = 'v22.0';
 
@@ -239,7 +241,7 @@ export const connectLeadForm = async (req, res) => {
         sample_payload: samplePayload,
         is_active: true
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     );
 
     return res.status(200).json({
@@ -261,6 +263,176 @@ export const connectLeadForm = async (req, res) => {
     });
   }
 };
+
+
+export const createInstantForm = async (req, res) => {
+  try {
+    const userId = req.user.owner_id || req.user.id;
+    const {
+      page_id,
+      name,
+      privacy_policy_url,
+      questions = ['FULL_NAME', 'EMAIL', 'PHONE'],
+      follow_up_action_url,
+      form_type = 'MORE_VOLUME' // MORE_VOLUME or HIGHER_INTENT
+    } = req.body;
+
+    if (!page_id || !name || !privacy_policy_url) {
+      return res.status(400).json({
+        success: false,
+        error: 'page_id, name, and privacy_policy_url are required'
+      });
+    }
+
+    const page = await FacebookPage.findOne({ page_id, user_id: userId, is_active: true }).lean();
+    if (!page) {
+      return res.status(404).json({ success: false, error: 'Facebook page not found or not connected' });
+    }
+
+    const standardTypes = ['FULL_NAME', 'EMAIL', 'PHONE', 'CITY', 'STREET_ADDRESS', 'POSTAL_CODE', 'DOB', 'GENDER', 'MARITAL_STATUS', 'RELATIONSHIP_STATUS', 'MILITARY_STATUS', 'WORK_EMAIL', 'WORK_PHONE_NUMBER', 'JOB_TITLE', 'COMPANY_NAME'];
+
+    // 1. Process Questions
+    const metaQuestions = questions.map(q => {
+      // If it's a simple string like "FULL_NAME"
+      if (typeof q === 'string') {
+        const type = q.toUpperCase();
+        if (standardTypes.includes(type)) return { type };
+        return { type: 'CUSTOM', label: q };
+      }
+
+      // If it's an object for Multiple Choice or Custom fields
+      const { type, label, options, key } = q;
+      const formattedType = type ? type.toUpperCase() : 'CUSTOM';
+
+      if (formattedType === 'APPOINTMENT_SCHEDULING') {
+        return { type: 'APPOINTMENT_SCHEDULING', label: label || 'Appointment' };
+      }
+
+      // Multiple Choice
+      if (options && Array.isArray(options)) {
+        return {
+          type: 'CUSTOM',
+          label: label || 'Select an option',
+          key: key || `custom_${Date.now()}`,
+          options: options.map(opt => (typeof opt === 'string' ? { value: opt } : opt))
+        };
+      }
+
+      // Short Answer (CUSTOM with no options)
+      if (formattedType === 'CUSTOM' || formattedType === 'SHORT_ANSWER') {
+        return {
+          type: 'CUSTOM',
+          label: label || 'Question',
+          key: key || `custom_${Date.now()}`
+        };
+      }
+
+      if (standardTypes.includes(formattedType)) {
+        return { type: formattedType };
+      }
+
+      return { type: 'CUSTOM', label: label || 'Question' };
+    });
+
+    // 2. Process Intro Page (Context Card / Rich Creative)
+    const { intro } = req.body;
+    let context_card = undefined;
+    if (intro) {
+      const content = [];
+      if (intro.overview) content.push(intro.overview);
+      if (intro.benefits && Array.isArray(intro.benefits)) {
+        content.push(...intro.benefits);
+      }
+
+      context_card = {
+        title: intro.headline || intro.title || name,
+        style: intro.benefits ? 'LIST_STYLE' : 'PARAGRAPH_STYLE',
+        content: content.length > 0 ? content : ['Welcome'],
+        button_text: intro.button_text || 'Next'
+      };
+
+      if (intro.image_url) {
+        context_card.image_url = intro.image_url;
+      }
+    }
+
+    const metaPayload = {
+      name,
+      form_type,
+      questions: JSON.stringify(metaQuestions),
+      privacy_policy: JSON.stringify({ url: privacy_policy_url }),
+      follow_up_action_url: follow_up_action_url || undefined,
+      allow_organic_leads: true,
+      block_display_for_non_targeted_viewer: false
+    };
+
+    if (context_card) {
+      metaPayload.context_card = JSON.stringify(context_card);
+    }
+
+    console.log(`[LeadGen] Creating form "${name}" on page ${page_id}...`);
+
+    const metaResp = await axios.post(
+      `https://graph.facebook.com/${FB_API_VERSION}/${page_id}/leadgen_forms`,
+      metaPayload,
+      { params: { access_token: page.page_access_token } }
+    );
+
+    const newFormId = metaResp.data.id;
+    console.log(`[LeadGen] ✅ Form created successfully on Meta. ID: ${newFormId}`);
+
+    let webhookSubscribed = false;
+    let subscriptionError = null;
+    try {
+      const subResp = await axios.post(
+        `https://graph.facebook.com/${FB_API_VERSION}/${page_id}/subscribed_apps`,
+        null,
+        {
+          params: {
+            subscribed_fields: 'leadgen',
+            access_token: page.page_access_token
+          }
+        }
+      );
+      webhookSubscribed = subResp.data?.success === true;
+    } catch (subErr) {
+      subscriptionError = subErr?.response?.data?.error?.message || subErr.message;
+    }
+
+    const leadForm = await FacebookLeadForm.findOneAndUpdate(
+      { user_id: userId, form_id: newFormId },
+      {
+        user_id: userId,
+        facebook_page_id: page._id,
+        page_id,
+        form_id: newFormId,
+        form_name: name,
+        webhook_subscribed: webhookSubscribed,
+        is_active: true
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Lead form created and connected successfully',
+      data: leadForm,
+      meta_response: metaResp.data,
+      webhook_subscribed: webhookSubscribed,
+      subscription_error: subscriptionError || undefined
+    });
+
+
+  } catch (error) {
+    console.error('Error creating lead form:', error?.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to create lead form on Meta',
+      details: error?.response?.data?.error?.message || error.message
+    });
+  }
+};
+
 
 
 export const getConnectedForms = async (req, res) => {
@@ -307,7 +479,14 @@ export const updateFormMapping = async (req, res) => {
   try {
     const userId = req.user.owner_id || req.user.id;
     const { id } = req.params;
-    const { field_mapping = [], tag_ids = [] } = req.body;
+    const {
+      field_mapping = [],
+      tag_ids = [],
+      send_first_template,
+      template_id,
+      template_variable_mappings,
+      template_carousel_cards_data
+    } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ success: false, error: 'Invalid form ID' });
@@ -383,6 +562,12 @@ export const updateFormMapping = async (req, res) => {
 
     form.field_mapping = field_mapping;
     form.tag_ids = tag_ids.map(t => new mongoose.Types.ObjectId(t));
+
+    if (send_first_template !== undefined) form.send_first_template = send_first_template;
+    if (template_id !== undefined) form.template_id = template_id || null;
+    if (template_variable_mappings !== undefined) form.template_variable_mappings = template_variable_mappings;
+    if (template_carousel_cards_data !== undefined) form.template_carousel_cards_data = template_carousel_cards_data;
+
     await form.save();
 
     const pendingLeads = await FacebookLead.find({ lead_form_id: form._id, status: 'pending' });
@@ -482,7 +667,7 @@ export const disconnectForm = async (req, res) => {
     const form = await FacebookLeadForm.findOneAndUpdate(
       { _id: id, user_id: userId },
       { is_active: false },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!form) {
@@ -540,11 +725,13 @@ export const getLeadsForForm = async (req, res) => {
 
 
 export const verifyLeadgenWebhook = async (req, res) => {
+  console.log('[LeadGen Verify] Received GET:');
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  const verifyToken = process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN;
+  const setting = await Setting.findOne().select('facebook_lead_webhook_verify_token').lean();
+  const verifyToken = setting?.facebook_lead_webhook_verify_token || process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN;
 
   console.log(`[LeadGen Verify] mode=${mode} token=${token} expected=${verifyToken}`);
 
@@ -559,10 +746,10 @@ export const verifyLeadgenWebhook = async (req, res) => {
 
 
 export const handleLeadgenWebhook = async (req, res) => {
-  res.sendStatus(200);
+  // res.sendStatus(200);
 
+  console.log('[LeadGen Webhook] Received POST:', JSON.stringify(req.body, null, 2));
   try {
-    console.log('[LeadGen Webhook] Received POST:', JSON.stringify(req.body, null, 2));
 
     const appSecret = process.env.FACEBOOK_APP_SECRET || (await Setting.findOne().select('app_secret').lean())?.app_secret;
     if (appSecret) {
@@ -660,6 +847,36 @@ export const handleLeadgenWebhook = async (req, res) => {
           leadLog.status = 'created';
           leadLog.contact_id = contact._id;
           console.log(`[LeadGen Webhook] ✅ Contact created/updated: ${contact._id} (${contact.name})`);
+
+          if (leadForm.send_first_template && leadForm.template_id) {
+            try {
+              const template = await Template.findById(leadForm.template_id).lean();
+              if (template) {
+                const variables = {};
+                if (leadForm.template_variable_mappings) {
+                  for (const [varKey, fbFieldName] of Object.entries(leadForm.template_variable_mappings)) {
+                    if (flatFields[fbFieldName] !== undefined) {
+                      variables[varKey] = flatFields[fbFieldName];
+                    }
+                  }
+                }
+
+                console.log(`[LeadGen Webhook] 🚀 Sending automated template "${template.template_name}" to ${contact.phone_number}`);
+
+                await UnifiedWhatsAppService.sendMessage(leadForm.user_id, {
+                  recipientNumber: contact.phone_number,
+                  messageType: 'template',
+                  templateName: template.template_name,
+                  templateId: template._id,
+                  templateVariables: variables,
+                  carouselCardsData: leadForm.template_carousel_cards_data || [],
+                  languageCode: template.language || 'en_US'
+                });
+              }
+            } catch (sendErr) {
+              console.error(`[LeadGen Webhook] ❌ Error sending automated template:`, sendErr.message);
+            }
+          }
         } else {
           leadLog.status = 'failed';
           leadLog.error_message = error;

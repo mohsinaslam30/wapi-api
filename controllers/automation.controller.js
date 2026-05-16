@@ -1102,6 +1102,53 @@ export const getAvailableNodeTypes = async (req, res) => {
             ]
           }
         ]
+      },
+      {
+        id: 'form_flow',
+        name: 'Form Flow',
+        description: 'Send a Meta Flow (Form) directly',
+        category: 'action',
+        icon: 'form',
+        inputs: 1,
+        outputs: 1,
+        parameters: [
+          { name: 'message_body', type: 'textarea', label: 'Message Body', placeholder: 'Please fill out this form' },
+          { name: 'button_text', type: 'text', label: 'Button Label', placeholder: 'Open Form' },
+          { name: 'form_id', type: 'text', label: 'Form ID (from Form Builder)', placeholder: 'Select a form' },
+          { name: 'recipient', type: 'text', label: 'Recipient Number', placeholder: '{{senderNumber}}', default: '{{senderNumber}}' }
+        ]
+      },
+      {
+        id: 'add_to_segment',
+        name: 'Add to Segment',
+        description: 'Add the contact to a specific segment',
+        category: 'action',
+        icon: 'users',
+        inputs: 1,
+        outputs: 1,
+        parameters: [
+          { name: 'segment_id', type: 'text', label: 'Segment ID' }
+        ]
+      },
+      {
+        id: 'update_contact',
+        name: 'Update Contact',
+        description: 'Update contact fields or custom fields',
+        category: 'action',
+        icon: 'user_edit',
+        inputs: 1,
+        outputs: 1,
+        parameters: [
+          {
+            name: 'updates',
+            type: 'array',
+            label: 'Field Updates',
+            item_fields: [
+              { name: 'field_key', type: 'text', label: 'Field Key (e.g. name, email, or custom_field_key)' },
+              { name: 'value', type: 'text', label: 'Value (supports {{variable}})' }
+            ]
+          }
+        ]
       }
     ];
 

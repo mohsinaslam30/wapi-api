@@ -3,13 +3,11 @@ import mongoose from 'mongoose';
 const otpLogSchema = new mongoose.Schema({
   user_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
   },
   channel: {
     type: String,
-    enum: ['email', 'whatsapp'],
-    required: true
+    enum: ['email', 'whatsapp']
   },
   whatsapp_count: {
     type: Number,

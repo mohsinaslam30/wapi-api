@@ -9,6 +9,10 @@ const router = express.Router();
 router.use(authenticate);
 router.use(requireSubscription);
 
+router.get('/funnels', checkPermission('view.kanban_funnel'), agentController.getAgentFunnels);
+router.post('/funnel/action', checkPermission('update.agents'), agentController.handleAgentKanbanAction);
+router.get('/:id/funnel-status', checkPermission('view.agents'), agentController.getAgentKanbanStatus);
+
 router.get('/all', checkPermission('view.agents'), agentController.getAllAgents);
 router.post('/create', checkPlanLimit('staff'), checkPermission('create.agents'), agentController.createAgent);
 router.put('/:id/update', checkPermission('update.agents'), agentController.updateAgent);
@@ -17,8 +21,5 @@ router.delete('/delete', checkPermission('delete.agents'), agentController.delet
 router.get('/:id', checkPermission('view.agents'), agentController.getAgentById);
 router.put('/:id/phone-no', checkPermission('update.agents'), agentController.updatePhonenoStatus);
 
-router.get('/funnels', checkPermission('view.kanban_funnel'), agentController.getAgentFunnels);
-router.get('/:id/funnel-status', checkPermission('view.agents'), agentController.getAgentKanbanStatus);
-router.post('/funnel/action', checkPermission('update.agents'), agentController.handleAgentKanbanAction);
 
 export default router;

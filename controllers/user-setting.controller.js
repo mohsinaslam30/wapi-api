@@ -57,7 +57,7 @@ const checkUserSubscriptionStatus = async (userId, userRole = null) => {
   const adminSettings = await Setting.findOne()
     .select('free_trial_enabled free_trial_days')
     .lean();
-    console.log("adminSettings", adminSettings?.free_trial_enabled);
+  console.log("adminSettings", adminSettings?.free_trial_enabled);
   if (adminSettings?.free_trial_enabled && adminSettings?.free_trial_days > 0) {
     const user = await User.findById(effectiveUserId)
       .select('created_at')
@@ -126,7 +126,7 @@ export const getUserSettings = async (req, res) => {
         api_key: userSettings.api_key,
         notification_tone: userSettings.notification_tone || 'default',
         notifications_enabled: userSettings.notifications_enabled ?? true,
-        is_subscribed: subscriptionStatus.is_subscribed,
+        is_subscribed: req.user?.isSelfTenant ? true : subscriptionStatus.is_subscribed,
         // is_subscribed: true,
         is_free_trial: subscriptionStatus.is_free_trial,
         free_trial_days_remaining: subscriptionStatus.free_trial_days_remaining,
@@ -145,6 +145,10 @@ export const getUserSettings = async (req, res) => {
         payment_reminder_unit: userSettings.payment_reminder_unit,
         payment_reminder_message: userSettings.payment_reminder_message,
         disable_admin_quick_reply: userSettings.disable_admin_quick_reply ?? false,
+        whatsapp_optout_keyword: userSettings.whatsapp_optout_keyword,
+        whatsapp_optin_keyword: userSettings.whatsapp_optin_keyword,
+        whatsapp_unsubscribe_message: userSettings.whatsapp_unsubscribe_message,
+        whatsapp_resubscribe_message: userSettings.whatsapp_resubscribe_message,
       },
     });
   } catch (error) {
@@ -162,7 +166,7 @@ export const updateUserSettings = async (req, res) => {
   try {
     const userId = req.user.id;
     const body = req.body || {};
-    const { ai_model, api_key, is_show_phone_no, notification_tone, notifications_enabled, theme_color, user_bubble_color, contact_bubble_color, bg_color, user_text_color, contact_text_color, payment_success_message, payment_failed_message, payment_reminder_enabled, payment_reminder_delay, payment_reminder_unit, payment_reminder_message, disable_admin_quick_reply } = body;
+    const { ai_model, api_key, is_show_phone_no, notification_tone, notifications_enabled, theme_color, user_bubble_color, contact_bubble_color, bg_color, user_text_color, contact_text_color, payment_success_message, payment_failed_message, payment_reminder_enabled, payment_reminder_delay, payment_reminder_unit, payment_reminder_message, disable_admin_quick_reply, whatsapp_optout_keyword, whatsapp_optin_keyword, whatsapp_unsubscribe_message, whatsapp_resubscribe_message } = body;
 
     const user = await User.findById(userId);
     if (!user) {
@@ -199,11 +203,15 @@ export const updateUserSettings = async (req, res) => {
       if (payment_reminder_unit !== undefined) userSettings.payment_reminder_unit = payment_reminder_unit;
       if (payment_reminder_message !== undefined) userSettings.payment_reminder_message = payment_reminder_message;
       if (disable_admin_quick_reply !== undefined) userSettings.disable_admin_quick_reply = disable_admin_quick_reply;
+      if (whatsapp_optout_keyword !== undefined) userSettings.whatsapp_optout_keyword = whatsapp_optout_keyword;
+      if (whatsapp_optin_keyword !== undefined) userSettings.whatsapp_optin_keyword = whatsapp_optin_keyword;
+      if (whatsapp_unsubscribe_message !== undefined) userSettings.whatsapp_unsubscribe_message = whatsapp_unsubscribe_message;
+      if (whatsapp_resubscribe_message !== undefined) userSettings.whatsapp_resubscribe_message = whatsapp_resubscribe_message;
 
       if (req.files && req.files.bg_image) {
         const file = Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image;
         userSettings.bg_image = file.path.startsWith('http') ? file.path : `/${file.path}`;
-        userSettings.bg_color = null; 
+        userSettings.bg_color = null;
       } else if (body.bg_image === 'null' || body.bg_image === '') {
         userSettings.bg_image = null;
       }
@@ -230,9 +238,13 @@ export const updateUserSettings = async (req, res) => {
         payment_reminder_unit: payment_reminder_unit,
         payment_reminder_message: payment_reminder_message,
         disable_admin_quick_reply: disable_admin_quick_reply ?? false,
+        whatsapp_optout_keyword: whatsapp_optout_keyword ?? ['STOP'],
+        whatsapp_optin_keyword: whatsapp_optin_keyword ?? ['START'],
+        whatsapp_unsubscribe_message: whatsapp_unsubscribe_message ?? 'You have been unsubscribed and will no longer receive messages. Reply {optin_keywords} to subscribe again.',
+        whatsapp_resubscribe_message: whatsapp_resubscribe_message ?? 'Welcome back! You have been re-subscribed to our broadcasts.',
         bg_image: (req.files && req.files.bg_image) ? (
-          (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path.startsWith('http') 
-            ? (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path 
+          (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path.startsWith('http')
+            ? (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path
             : `/${(Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path}`
         ) : null
       });
@@ -249,10 +261,10 @@ export const updateUserSettings = async (req, res) => {
       data: {
         notification_tone: userSettings.notification_tone ?? 'default',
         notifications_enabled: userSettings.notifications_enabled ?? true,
-        is_subscribed: subscriptionStatus.is_subscribed,
+        is_subscribed: req.user?.isSelfTenant ? true : subscriptionStatus.is_subscribed,
         is_free_trial: subscriptionStatus.is_free_trial,
         free_trial_days_remaining:
-        subscriptionStatus.free_trial_days_remaining,
+          subscriptionStatus.free_trial_days_remaining,
         theme_color: userSettings.theme_color,
         user_bubble_color: userSettings.user_bubble_color,
         contact_bubble_color: userSettings.contact_bubble_color,
@@ -267,6 +279,10 @@ export const updateUserSettings = async (req, res) => {
         payment_reminder_unit: userSettings.payment_reminder_unit,
         payment_reminder_message: userSettings.payment_reminder_message,
         disable_admin_quick_reply: userSettings.disable_admin_quick_reply ?? false,
+        whatsapp_optout_keyword: userSettings.whatsapp_optout_keyword,
+        whatsapp_optin_keyword: userSettings.whatsapp_optin_keyword,
+        whatsapp_unsubscribe_message: userSettings.whatsapp_unsubscribe_message,
+        whatsapp_resubscribe_message: userSettings.whatsapp_resubscribe_message,
       }
     });
   } catch (error) {

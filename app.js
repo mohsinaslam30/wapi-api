@@ -66,7 +66,7 @@ const captureRawBody = (req, res, next) => {
 };
 
 app.use(captureRawBody);
-// app.use(rtInit);
+app.use(rtInit);
 
 import { handleStripeWebhook, handleRazorpayWebhook, handlePayPalWebhook } from "./controllers/webhook.controller.js";
 app.post("/api/webhook/stripe", handleStripeWebhook);
@@ -82,11 +82,11 @@ app.use('/install', express.static(path.join(__dirname, 'public/install')));
 
 app.use('/api', denyMutationInDemo);
 
-// import { initializeInstaller, createInstallationMiddleware } from './lib/install.js';
+import { initializeInstaller, createInstallationMiddleware } from './lib/install.js';
 
-// await initializeInstaller(app);
+await initializeInstaller(app);
 
-// app.use(createInstallationMiddleware());
+app.use(createInstallationMiddleware());
 
 import webhookRoutes from "./routes/webhook.routes.js";
 app.use("/api/webhook", webhookRoutes);
@@ -123,6 +123,7 @@ import dashboardRoutes from "./routes/dashboard.routes.js";
 import adminDashboardRoutes from "./routes/admin-dashboard.routes.js";
 import adminTemplateRoutes from "./routes/admin-template.routes.js";
 import landingPageRoutes from "./routes/landing-page.routes.js";
+import authPageSetupRoutes from "./routes/authPageSetup.routes.js";
 import ecommerceOrderRoutes from "./routes/ecommerce-order.routes.js";
 import widgetRoutes from "./routes/widget.routes.js";
 import shortLinkRoutes from "./routes/short-link.routes.js";
@@ -140,6 +141,9 @@ import quickReplyRoutes from "./routes/quick-reply.routes.js";
 import impersonationRoutes from "./routes/impersonation.routes.js";
 import kanbanFunnelRoutes from "./routes/kanban-funnel.routes.js";
 import segmentRoutes from "./routes/segment.routes.js";
+import guideRoutes from "./routes/guide.routes.js";
+import selfTenantRoutes from "./routes/self-tenant.routes.js";
+import emailTemplateRoutes from "./routes/email-template.routes.js";
 import { checkImpersonationStatus, restrictImpersonationActions } from "./middlewares/impersonation.js";
 
 import facebookRoutes from "./routes/facebook.routes.js";
@@ -236,6 +240,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);
 app.use("/api/admin/templates", adminTemplateRoutes);
 app.use("/api/landing-page", landingPageRoutes);
+app.use("/api/auth-page-setup", authPageSetupRoutes);
 app.use("/api/api-keys", apiKeyRoutes);
 app.use("/api/widgets", widgetRoutes);
 app.use("/api/short-links", shortLinkRoutes);
@@ -255,6 +260,9 @@ app.use("/api/segments", segmentRoutes);
 app.use("/api/facebook", facebookRoutes);
 app.use("/api/facebook-ads", facebookAdRoutes);
 app.use("/api/facebook-leads", facebookLeadRoutes);
+app.use("/api/guides", guideRoutes);
+app.use("/api/self-tenant", selfTenantRoutes);
+app.use("/api/email-templates", emailTemplateRoutes);
 
 app.use("/api/waba-configurations", wabaConfigurationRoutes);
 app.use("/api/message-bots", messageBotRoutes);
@@ -284,14 +292,11 @@ app.post("/webhook/whatsapp", (req, res) => {
   const change = req.body.entry?.[0]?.changes?.[0];
   const messages = change?.value?.messages;
 
-  console.log("Messages:", messages[0].errors);
-
   if (value?.statuses) {
-
     return handleStatusUpdateOriginal(req, res, io);
   } else if (value?.messages) {
-    const message = value.messages[0];
-    if (message.type === 'call') {
+    const message = value.messages?.[0];
+    if (message?.type === 'call') {
       import('./services/whatsapp/call-automation.service.js').then(m => {
         m.default.handleIncomingCall(
           message.call.id,
