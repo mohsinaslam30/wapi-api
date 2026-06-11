@@ -4,16 +4,21 @@ import { Setting } from '../models/index.js';
 const sendMail = async (to, subject, html, attachments = []) => {
   try {
     const settings = await Setting.findOne().sort({ created_at: -1 }).lean();
-    if (!settings) throw new Error('SMTP settings not found.');
+
+    const host = (process.env.SMTP_HOST !== undefined ? process.env.SMTP_HOST : (settings?.smtp_host || '')).trim();
+    const user = (process.env.SMTP_USER !== undefined ? process.env.SMTP_USER : (settings?.smtp_user || '')).trim();
+    const pass = (process.env.SMTP_PASS !== undefined ? process.env.SMTP_PASS : (settings?.smtp_pass || '')).trim();
+    const port = Number(process.env.SMTP_PORT !== undefined ? process.env.SMTP_PORT : (settings?.smtp_port || 587));
+
+    if (!host || !user || !pass) {
+      throw new Error('SMTP settings are not configured.');
+    }
 
     const transporter = nodemailer.createTransport({
-      host: settings.smtp_host || process.env.SMTP_HOST,
-      port: settings.smtp_port || process.env.SMTP_PORT,
-      secure: false,
-      auth: {
-        user: settings.smtp_user || process.env.SMTP_USER,
-        pass: settings.smtp_pass || process.env.SMTP_PASS,
-      },
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
     });
 
     const fromName = settings.mail_from_name || settings.app_name || 'App';
@@ -29,10 +34,10 @@ const sendMail = async (to, subject, html, attachments = []) => {
 };
 
 const getSupportMail = async () => {
-    const settings = await Setting.findOne().sort({ created_at: -1 }).lean();
-    const supportEmail = settings?.support_email;
+  const settings = await Setting.findOne().sort({ created_at: -1 }).lean();
+  const supportEmail = settings?.support_email;
 
-    return supportEmail;
+  return supportEmail;
 }
 
 export { sendMail, getSupportMail };

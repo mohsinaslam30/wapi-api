@@ -7,7 +7,8 @@ import {
   updateOrderStatus,
   upsertOrderStatusTemplate,
   getOrderStatusTemplates,
-  bulkDeleteOrders
+  bulkDeleteOrders,
+  sendOrderPaymentLink
 } from '../controllers/ecommerce-order.controller.js';
 import { authenticate } from '../middlewares/auth.js';
 import { checkPermission } from '../middlewares/permission.js';
@@ -23,6 +24,8 @@ router.get('/message/:message_id/orders', authenticate, checkPermission('view.ec
 router.get('/orders/:order_id', authenticate, checkPermission('view.ecommerce_orders'), getOrderById);
 
 router.put('/orders/:order_id/status', authenticate, checkPermission('update.ecommerce_orders'), updateOrderStatus);
+
+router.post('/orders/:order_id/send-payment-link', authenticate, checkPermission('update.ecommerce_orders'), sendOrderPaymentLink);
 
 router.get('/status-templates', authenticate, checkPermission('view.ecommerce_orders'), getOrderStatusTemplates);
 

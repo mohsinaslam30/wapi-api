@@ -65,7 +65,9 @@ const heroSectionSchema = new mongoose.Schema({
   description: { type: String },
   primary_button: primaryButtonSchema,
   hero_image: { type: String },
-  floating_images: [floatingImageSchema]
+  floating_images: [floatingImageSchema],
+  brand_logos: [{ type: String }],
+  trusted_label: { type: String }
 });
 
 const featuresSectionSchema = new mongoose.Schema({
@@ -121,6 +123,11 @@ const footerSectionSchema = new mongoose.Schema({
   copy_rights_text: { type: String }
 });
 
+const headerSectionSchema = new mongoose.Schema({
+  logo_url: { type: String },
+  menu_items: { type: mongoose.Schema.Types.Mixed, default: [] }
+}, { _id: false });
+
 const landingPageSchema = new mongoose.Schema({
   hero_section: heroSectionSchema,
   features_section: featuresSectionSchema,
@@ -129,7 +136,8 @@ const landingPageSchema = new mongoose.Schema({
   testimonials_section: testimonialsSectionSchema,
   faq_section: faqSectionSchema,
   contact_section: contactSectionSchema,
-  footer_section: footerSectionSchema
+  footer_section: footerSectionSchema,
+  header_section: headerSectionSchema
 }, {
   timestamps: true
 });

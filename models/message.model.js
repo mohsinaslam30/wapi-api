@@ -9,6 +9,23 @@ const messageSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  sender_id: {
+    type: String,
+    default: null
+  },
+  recipient_id: {
+    type: String,
+    default: null
+  },
+  platform: {
+    type: String,
+    enum: ['whatsapp', 'telegram', 'facebook', 'instagram', 'twitter'],
+    default: 'whatsapp'
+  },
+  platform_message_id: {
+    type: String,
+    default: null
+  },
   parent_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Message',
@@ -30,7 +47,7 @@ const messageSchema = new mongoose.Schema({
   },
   message_type: {
     type: String,
-    enum: ['text', 'link', 'image', 'sticker', 'file', 'video', 'poll', 'form', 'system', 'call', 'document', 'audio', 'location', 'interactive', 'template', 'order', 'system_messages' , 'reaction'],
+    enum: ['text', 'link', 'image', 'sticker', 'file', 'video', 'poll', 'form', 'system', 'call', 'document', 'audio', 'location', 'interactive', 'template', 'order', 'system_messages' , 'reaction', 'carousel', 'comment', 'story_reply'],
     default: 'text'
   },
   file_url: {
@@ -114,7 +131,7 @@ const messageSchema = new mongoose.Schema({
   },
   provider: {
     type: String,
-    enum: ['business_api', 'baileys'],
+    enum: ['business_api', 'baileys', 'telegram', 'facebook', 'instagram', 'twitter'],
     default: null
   },
   reply_message_id: {
@@ -122,6 +139,10 @@ const messageSchema = new mongoose.Schema({
     default: null
   },
   reaction_message_id: {
+    type: String,
+    default: null
+  },
+  reaction_emoji: {
     type: String,
     default: null
   },

@@ -195,7 +195,50 @@ const planSchema = new mongoose.Schema({
         quick_replies: {
             type: Number,
             default: 0
-        }
+        },
+        omnichannel_facebook: {
+            type: Boolean,
+            default: false
+        },
+        fb_chat: { type: Boolean, default: false },
+        fb_automation: { type: Boolean, default: false },
+        fb_campaign: { type: Boolean, default: false },
+        fb_template: { type: Boolean, default: false },
+        fb_keyword: { type: Boolean, default: false },
+        fb_comment_dm: { type: Boolean, default: false },
+        fb_retrigger: { type: Boolean, default: false },
+
+        omnichannel_instagram: {
+            type: Boolean,
+            default: false
+        },
+        ig_chat: { type: Boolean, default: false },
+        ig_automation: { type: Boolean, default: false },
+        ig_campaign: { type: Boolean, default: false },
+        ig_template: { type: Boolean, default: false },
+        ig_keyword: { type: Boolean, default: false },
+        ig_comment_dm: { type: Boolean, default: false },
+        ig_retrigger: { type: Boolean, default: false },
+
+        omnichannel_telegram: {
+            type: Boolean,
+            default: false
+        },
+        tg_chat: { type: Boolean, default: false },
+        tg_automation: { type: Boolean, default: false },
+        tg_campaign: { type: Boolean, default: false },
+        tg_template: { type: Boolean, default: false },
+        tg_keyword: { type: Boolean, default: false },
+
+        omnichannel_twitter: {
+            type: Boolean,
+            default: false
+        },
+        tw_chat: { type: Boolean, default: false },
+        tw_automation: { type: Boolean, default: false },
+        tw_campaign: { type: Boolean, default: false },
+        tw_template: { type: Boolean, default: false },
+        tw_keyword: { type: Boolean, default: false }
     },
     enabled_features: {
         contacts: { type: Boolean, default: false },

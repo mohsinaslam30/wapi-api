@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import axios from 'axios';
 import {
   Setting,
-  FacebookConnection,
   FacebookPage,
   FacebookLeadForm,
   FacebookLead,
@@ -87,41 +86,36 @@ const upsertContactFromLead = async (leadForm, flatFields, userId) => {
 
     const phoneIdentifier = payload.phone_number || `email:${payload.email}`;
 
-    let contact = await Contact.findOne({
-      phone_number: phoneIdentifier,
-      user_id: userId,
-      deleted_at: null
-    });
-
     const tagIds = (leadForm.tag_ids || []).map(id => new mongoose.Types.ObjectId(id));
 
-    if (contact) {
-      if (payload.email && !contact.email) contact.email = payload.email;
-      if (payload.name && contact.name === 'Facebook Lead') contact.name = payload.name;
-      if (tagIds.length) {
-        const existingTagStrs = contact.tags.map(t => t.toString());
-        for (const tid of tagIds) {
-          if (!existingTagStrs.includes(tid.toString())) contact.tags.push(tid);
-        }
-      }
-      for (const [k, v] of Object.entries(payload.custom_fields || {})) {
-        contact.custom_fields.set(k, v);
-      }
-      await contact.save();
-    } else {
-      contact = await Contact.create({
+    const updateOps = {
+      $setOnInsert: {
         phone_number: phoneIdentifier,
-        name: payload.name,
-        email: payload.email || null,
         source: 'whatsapp',
-        tags: tagIds,
-        custom_fields: payload.custom_fields || {},
         user_id: userId,
         created_by: userId,
         status: 'lead',
         type: 'lead'
-      });
+      },
+      $set: { deleted_at: null }
+    };
+
+    if (payload.email) updateOps.$set.email = payload.email;
+    if (payload.name) updateOps.$set.name = payload.name;
+
+    for (const [k, v] of Object.entries(payload.custom_fields || {})) {
+      updateOps.$set[`custom_fields.${k}`] = v;
     }
+
+    if (tagIds.length) {
+      updateOps.$addToSet = { tags: { $each: tagIds } };
+    }
+
+    let contact = await Contact.findOneAndUpdate(
+      { phone_number: phoneIdentifier, user_id: userId },
+      updateOps,
+      { new: true, upsert: true }
+    );
 
     if (tagIds.length) {
       await Tag.updateMany({ _id: { $in: tagIds } }, { $inc: { usage_count: 1 } });
@@ -274,7 +268,7 @@ export const createInstantForm = async (req, res) => {
       privacy_policy_url,
       questions = ['FULL_NAME', 'EMAIL', 'PHONE'],
       follow_up_action_url,
-      form_type = 'MORE_VOLUME' // MORE_VOLUME or HIGHER_INTENT
+      form_type = 'MORE_VOLUME'
     } = req.body;
 
     if (!page_id || !name || !privacy_policy_url) {
@@ -291,16 +285,13 @@ export const createInstantForm = async (req, res) => {
 
     const standardTypes = ['FULL_NAME', 'EMAIL', 'PHONE', 'CITY', 'STREET_ADDRESS', 'POSTAL_CODE', 'DOB', 'GENDER', 'MARITAL_STATUS', 'RELATIONSHIP_STATUS', 'MILITARY_STATUS', 'WORK_EMAIL', 'WORK_PHONE_NUMBER', 'JOB_TITLE', 'COMPANY_NAME'];
 
-    // 1. Process Questions
     const metaQuestions = questions.map(q => {
-      // If it's a simple string like "FULL_NAME"
       if (typeof q === 'string') {
         const type = q.toUpperCase();
         if (standardTypes.includes(type)) return { type };
         return { type: 'CUSTOM', label: q };
       }
 
-      // If it's an object for Multiple Choice or Custom fields
       const { type, label, options, key } = q;
       const formattedType = type ? type.toUpperCase() : 'CUSTOM';
 
@@ -308,7 +299,6 @@ export const createInstantForm = async (req, res) => {
         return { type: 'APPOINTMENT_SCHEDULING', label: label || 'Appointment' };
       }
 
-      // Multiple Choice
       if (options && Array.isArray(options)) {
         return {
           type: 'CUSTOM',
@@ -318,7 +308,6 @@ export const createInstantForm = async (req, res) => {
         };
       }
 
-      // Short Answer (CUSTOM with no options)
       if (formattedType === 'CUSTOM' || formattedType === 'SHORT_ANSWER') {
         return {
           type: 'CUSTOM',
@@ -334,7 +323,6 @@ export const createInstantForm = async (req, res) => {
       return { type: 'CUSTOM', label: label || 'Question' };
     });
 
-    // 2. Process Intro Page (Context Card / Rich Creative)
     const { intro } = req.body;
     let context_card = undefined;
     if (intro) {

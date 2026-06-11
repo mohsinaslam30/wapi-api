@@ -353,7 +353,10 @@ export const getAllUsers = async (req, res) => {
           plan_id: { $in: planIds },
           deleted_at: null,
           status: { $in: ["active", "trial"] },
-          current_period_end: { $gte: now },
+          $or: [
+            { current_period_end: { $gte: now } },
+            { current_period_end: null }
+          ]
         })
           .select("user_id")
           .lean();
@@ -621,8 +624,8 @@ export const updateUser = async (req, res) => {
         query.$or = orConditions;
         await Contact.updateMany(
           query,
-          { 
-            $set: { 
+          {
+            $set: {
               name: user.name,
               email: user.email,
               phone_number: user.phone

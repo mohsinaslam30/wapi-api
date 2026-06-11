@@ -64,8 +64,9 @@ async function seedDefaultSettings() {
       max_group_members: 1024,
       whatsapp_webhook_url: `webhook/whatsapp`,
       webhook_verification_token: process.env.WHATSAPP_VERIFY_TOKEN || null,
-      facebook_lead_webhook_url: `webhook/facebook/leadgen/receive`,
-      facebook_lead_webhook_verify_token: process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN || null,
+      facebook_lead_webhook_url: `api/webhook/facebook`,
+      instagram_webhook_url: `api/webhook/instagram`,
+      facebook_lead_webhook_verify_token: process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN || process.env.facebook_lead_webhook_verify_token || null,
       free_trial_enabled: false,
       free_trial_days: 7,
       trial_expired_delete_days: 0,
@@ -92,7 +93,17 @@ async function seedDefaultSettings() {
       paypal_client_secret: process.env.PAYPAL_CLIENT_SECRET || null,
       paypal_mode: 'sandbox',
       is_paypal_active: false,
-      paypal_webhook_id: process.env.PAYPAL_WEBHOOK_ID || null
+      paypal_webhook_id: process.env.PAYPAL_WEBHOOK_ID || null,
+      cookie_enabled: false,
+      cookie_text: "We use cookies on our site to enhance your user experience, provide personalized content, and analyze our traffic. [page:cookie-policy|Cookie Policy]",
+      cookie_accept_text: "Accept all",
+      cookie_decline_text: "Reject non-essential",
+      cookie_pref_text: "Preferences",
+      is_banner: false,
+      banner_text: 'Welcome to our platform! Enjoy our premium services.',
+      banner_possion: 'center',
+      banner_bg_color: '#f59e0b',
+      banner_text_color: '#000000'
     };
 
     const updatedSettings = await Setting.findOneAndUpdate({},

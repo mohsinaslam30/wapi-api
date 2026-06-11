@@ -50,6 +50,14 @@ const ecommerceOrderSchema = new mongoose.Schema({
     index: true
   },
 
+  payment_status: {
+    type: String,
+    enum: ['unpaid', 'paid'],
+    default: 'unpaid',
+    index: true
+  },
+
+
   items: [{
     product_retailer_id: String,
     quantity: Number,

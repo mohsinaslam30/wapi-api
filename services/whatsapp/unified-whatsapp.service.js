@@ -40,6 +40,11 @@ class UnifiedWhatsAppService {
           console.log(`[Socket] Received agent_typing: user=${user_id}, contact=${contact_id}, typing=${isTyping}`);
           if (!isTyping) {
           }
+          const contact = await Contact.findById(contact_id);
+          if (contact && ['telegram', 'facebook', 'instagram'].includes(contact.source)) {
+             return;
+          }
+
           const lastMessage = await Message.findOne({
             contact_id: contact_id,
             from_me: false
@@ -208,7 +213,7 @@ class UnifiedWhatsAppService {
     }
 
     if (replyType && replyId) {
-      if (replyType === 'ReplyMaterial' || replyType === 'replymaterial' || ['text', 'image', 'video', 'audio', 'document', 'flow'].includes(replyType)) {
+      if (replyType === 'ReplyMaterial' || replyType === 'replymaterial' || ['text', 'media', 'image', 'video', 'audio', 'document', 'flow'].includes(replyType)) {
         const material = await ReplyMaterial.findById(replyId);
         if (material) {
           messageType = material.type;
@@ -457,8 +462,27 @@ class UnifiedWhatsAppService {
     messageParams.templateName = templateName;
     messageParams.templateComponents = templateComponents;
     messageParams.mediaUrl = mediaUrl;
-    messageParams.replyMessageId = replyMessageId;
-    messageParams.reactionMessageId = reactionMessageId;
+    let finalReplyMessageId = replyMessageId;
+    let finalReactionMessageId = reactionMessageId;
+
+    const isValidObjectId = (id) => /^[0-9a-fA-F]{24}$/.test(id);
+
+    if (replyMessageId && isValidObjectId(replyMessageId)) {
+      const msg = await Message.findById(replyMessageId).lean();
+      if (msg) {
+        finalReplyMessageId = msg.platform_message_id || msg.wa_message_id || replyMessageId;
+      }
+    }
+
+    if (reactionMessageId && isValidObjectId(reactionMessageId)) {
+      const msg = await Message.findById(reactionMessageId).lean();
+      if (msg) {
+        finalReactionMessageId = msg.platform_message_id || msg.wa_message_id || reactionMessageId;
+      }
+    }
+
+    messageParams.replyMessageId = finalReplyMessageId;
+    messageParams.reactionMessageId = finalReactionMessageId;
     messageParams.reactionEmoji = reactionEmoji;
     if (!messageParams.templateId && templateId) {
       messageParams.templateId = templateId;
@@ -471,6 +495,7 @@ class UnifiedWhatsAppService {
       );
     }
 
+    let result;
     if (whatsappPhoneNumber && whatsappPhoneNumber.waba_id) {
       const waba = whatsappPhoneNumber.waba_id;
       const providerType = waba.provider || PROVIDER_TYPES.BUSINESS_API;
@@ -492,17 +517,52 @@ class UnifiedWhatsAppService {
         messageType: messageParams.messageType
       });
 
-      return await this.providers[providerType].sendMessage(userId, messageParams, connection);
-    }
-
-    let providerInfo;
-    if (providerType) {
-      providerInfo = await this.getProviderByType(providerType, userId, connectionId);
+      result = await this.providers[providerType].sendMessage(userId, messageParams, connection);
     } else {
-      providerInfo = await this.getProvider(userId, connectionId);
+      let providerInfo;
+      if (providerType) {
+        providerInfo = await this.getProviderByType(providerType, userId, connectionId);
+      } else {
+        providerInfo = await this.getProvider(userId, connectionId);
+      }
+      result = await providerInfo.provider.sendMessage(userId, messageParams, providerInfo.connection);
     }
 
-    return await providerInfo.provider.sendMessage(userId, messageParams, providerInfo.connection);
+    if (result && result.messageId && this.io) {
+      try {
+        const savedMessage = isValidObjectId(result.messageId)
+          ? await Message.findById(result.messageId).lean()
+          : await Message.findOne({ wa_message_id: result.messageId }).lean();
+        if (savedMessage) {
+          const contact = await Contact.findById(savedMessage.contact_id).lean();
+          this.io.emit('whatsapp:message', {
+            id: savedMessage._id.toString(),
+            messageId: savedMessage._id.toString(),
+            senderNumber: savedMessage.sender_number,
+            recipientNumber: savedMessage.recipient_number,
+            content: savedMessage.content,
+            messageType: savedMessage.message_type,
+            fileUrl: savedMessage.file_url,
+            fromMe: savedMessage.from_me,
+            direction: savedMessage.direction,
+            createdAt: savedMessage.wa_timestamp,
+            contact_id: savedMessage.contact_id?.toString(),
+            contactId: savedMessage.contact_id?.toString(),
+            sender: { id: savedMessage.sender_number, name: savedMessage.sender_number },
+            recipient: { id: savedMessage.recipient_number, name: contact ? contact.name : savedMessage.recipient_number },
+            provider: savedMessage.provider,
+            wa_message_id: savedMessage.wa_message_id,
+            user_id: savedMessage.user_id?.toString(),
+            whatsapp_phone_number_id: whatsappPhoneNumber ? whatsappPhoneNumber._id?.toString() : (messageParams.whatsappPhoneNumberId?.toString() || null),
+            platform: savedMessage.platform || 'whatsapp'
+          });
+        }
+      } catch (err) {
+        console.error('Error emitting whatsapp:message socket event from unified service:', err);
+      }
+    }
+
+    return result;
   }
 
   getMediaTypeFromUrl(url) {

@@ -6,6 +6,11 @@ const facebookPageSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  workspace_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    index: true
+  },
   connection_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'FacebookConnection',
@@ -42,6 +47,10 @@ const facebookPageSchema = new mongoose.Schema({
     default: false
   },
   instagram_username: {
+    type: String,
+    default: null
+  },
+  instagram_account_id: {
     type: String,
     default: null
   },

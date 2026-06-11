@@ -2,7 +2,7 @@ import Stripe from 'stripe';
 import Razorpay from 'razorpay';
 import path from 'path';
 import nodemailer from 'nodemailer';
-import { Setting, Currency, WhatsappWaba, Role, User, WhatsappPhoneNumber, Template } from '../models/index.js';
+import { Setting, Currency, WhatsappWaba, Role, User, WhatsappPhoneNumber, Template, Page, Plan } from '../models/index.js';
 import { updateEnvFile } from '../utils/env-file.js';
 import mongoose from 'mongoose';
 import { PayPalService } from '../utils/payment-gateway.service.js';
@@ -18,11 +18,31 @@ const STRIPE_WEBHOOK_EVENTS = [
 ];
 
 const getAllSettings = async (req, res) => {
-  const settings = await Setting.findOne().populate('default_currency');
+  const settings = await Setting.findOne().populate('default_currency').populate('signup_agree_page');
   if (!settings) {
     return res.status(200).json({});
   }
   const out = settings.toObject ? settings.toObject() : { ...settings };
+
+ try {
+    const pages = await Page.find({ status: true, deleted_at: null });
+    out.pages = pages.map(p => ({ _id: p._id, title: p.title, slug: p.slug, system_reserved: p.system_reserved }));
+
+    if (out.cookie_text) {
+      const regex = /\[page:([a-zA-Z0-9-_]+)(?:\|([^\]]+))?\]/g;
+      out.cookie_text_parsed = out.cookie_text.replace(regex, (match, slug, customLabel) => {
+        const page = pages.find((p) => p.slug === slug);
+        const label = customLabel || (page ? page.title : slug);
+        return `<a href="/page/${slug}">${label}</a>`;
+      });
+    } else {
+      out.cookie_text_parsed = "";
+    }
+  } catch (err) {
+    console.error("Error processing page shortcodes in settings:", err);
+    out.cookie_text_parsed = out.cookie_text || "";
+    out.pages = [];
+  }
 
   const logoFields = ['favicon_url', 'logo_light_url', 'logo_dark_url', 'sidebar_light_logo_url', 'sidebar_dark_logo_url'];
   const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
@@ -41,10 +61,15 @@ const getAllSettings = async (req, res) => {
     out.facebook_lead_webhook_url = settings.facebook_lead_webhook_url;
   }
 
+  if (settings.instagram_webhook_url) {
+    out.instagram_webhook_url = settings.instagram_webhook_url;
+  }
+
   out.whatsapp_otp_variable_mapping = settings.whatsapp_otp_variable_mapping || {};
 
   out.webhook_verification_token = process.env.WHATSAPP_VERIFY_TOKEN || settings.webhook_verification_token || '';
   out.facebook_lead_webhook_verify_token = process.env.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN || settings.facebook_lead_webhook_verify_token || '';
+  out.instagram_webhook_verify_token = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || settings.instagram_webhook_verify_token || '';
   out.smtp_host = process.env.SMTP_HOST || '';
   out.smtp_port = process.env.SMTP_PORT || '';
   out.smtp_user = process.env.SMTP_USER || '';
@@ -132,6 +157,24 @@ const getAllSettings = async (req, res) => {
   out.otp_delivery_method = settings.otp_delivery_method || 'email';
   out.whatsapp_otp_template_id = settings.whatsapp_otp_template_id || null;
 
+  out.is_banner = settings.is_banner !== undefined ? settings.is_banner : false;
+  out.banner_text = settings.banner_text !== undefined ? settings.banner_text : 'Welcome to our platform! Enjoy our premium services.';
+  out.banner_possion = settings.banner_possion !== undefined ? settings.banner_possion : 'center';
+  out.banner_bg_color = settings.banner_bg_color !== undefined ? settings.banner_bg_color : '#f59e0b';
+  out.banner_text_color = settings.banner_text_color !== undefined ? settings.banner_text_color : '#000000';
+
+  out.signup_agree_enable = settings.signup_agree_enable !== undefined ? settings.signup_agree_enable : false;
+  out.signup_agree_prefix = settings.signup_agree_prefix || 'I agree to the';
+  out.signup_agree_link_text = settings.signup_agree_link_text || 'Privacy Policy';
+  out.signup_agree_page = settings.signup_agree_page || null;
+
+  out.widget_enabled = settings.widget_enabled !== undefined ? settings.widget_enabled : true;
+  out.widget_whatsapp_url = settings.widget_whatsapp_url || '';
+  out.widget_telegram_url = settings.widget_telegram_url || '';
+  out.widget_instagram_url = settings.widget_instagram_url || '';
+  out.widget_facebook_url = settings.widget_facebook_url || '';
+  out.widget_sms_url = settings.widget_sms_url || '';
+
   res.status(200).json(out);
 };
 
@@ -181,6 +224,10 @@ const updateSetting = async (req, res) => {
 
     if (req.body.facebook_lead_webhook_verify_token !== undefined && !req.body.facebook_lead_webhook_verify_token.endsWith('****')) {
       envVars.FACEBOOK_LEAD_WEBHOOK_VERIFY_TOKEN = req.body.facebook_lead_webhook_verify_token;
+    }
+
+    if (req.body.instagram_webhook_verify_token !== undefined && !req.body.instagram_webhook_verify_token.endsWith('****')) {
+      envVars.INSTAGRAM_WEBHOOK_VERIFY_TOKEN = req.body.instagram_webhook_verify_token;
     }
 
     if (req.body.smtp_host !== undefined) {
@@ -345,14 +392,91 @@ const updateSetting = async (req, res) => {
       processedBody.whatsapp_otp_template_id = req.body.whatsapp_otp_template_id;
     }
 
+    if (req.body.cookie_enabled !== undefined) {
+      processedBody.cookie_enabled = req.body.cookie_enabled === true || req.body.cookie_enabled === 'true';
+    }
+
+    if (req.body.cookie_text !== undefined) {
+      processedBody.cookie_text = req.body.cookie_text;
+    }
+
+    if (req.body.cookie_accept_text !== undefined) {
+      processedBody.cookie_accept_text = req.body.cookie_accept_text;
+    }
+
+    if (req.body.cookie_decline_text !== undefined) {
+      processedBody.cookie_decline_text = req.body.cookie_decline_text;
+    }
+
+    if (req.body.cookie_pref_text !== undefined) {
+      processedBody.cookie_pref_text = req.body.cookie_pref_text;
+    }
+
+    if (req.body.signup_agree_enable !== undefined) {
+      processedBody.signup_agree_enable = req.body.signup_agree_enable === true || req.body.signup_agree_enable === 'true';
+    }
+    if (req.body.signup_agree_prefix !== undefined) {
+      processedBody.signup_agree_prefix = req.body.signup_agree_prefix;
+    }
+    if (req.body.signup_agree_link_text !== undefined) {
+      processedBody.signup_agree_link_text = req.body.signup_agree_link_text;
+    }
+    if (req.body.signup_agree_page !== undefined) {
+      if (req.body.signup_agree_page === '' || req.body.signup_agree_page === 'null' || req.body.signup_agree_page === null) {
+        processedBody.signup_agree_page = null;
+      } else {
+        processedBody.signup_agree_page = req.body.signup_agree_page;
+      }
+    }
+
+    if (req.body.widget_enabled !== undefined) {
+      processedBody.widget_enabled = req.body.widget_enabled === true || req.body.widget_enabled === 'true';
+    }
+    if (req.body.widget_whatsapp_url !== undefined) {
+      processedBody.widget_whatsapp_url = req.body.widget_whatsapp_url;
+    }
+    if (req.body.widget_telegram_url !== undefined) {
+      processedBody.widget_telegram_url = req.body.widget_telegram_url;
+    }
+    if (req.body.widget_instagram_url !== undefined) {
+      processedBody.widget_instagram_url = req.body.widget_instagram_url;
+    }
+    if (req.body.widget_facebook_url !== undefined) {
+      processedBody.widget_facebook_url = req.body.widget_facebook_url;
+    }
+    if (req.body.widget_sms_url !== undefined) {
+      processedBody.widget_sms_url = req.body.widget_sms_url;
+    }
+
     if (setting) {
       const updatedSetting = await Setting.findByIdAndUpdate(setting._id, processedBody, {
         returnDocument: 'after',
         runValidators: true,
-      });
+      }).populate('signup_agree_page');
       setting = updatedSetting;
     } else {
-      setting = await Setting.create(processedBody);
+      const createdSetting = await Setting.create(processedBody);
+      setting = await Setting.findById(createdSetting._id).populate('signup_agree_page');
+    }
+
+    if (processedBody.omnichannel_platforms !== undefined) {
+      let activePlatforms = processedBody.omnichannel_platforms;
+      if (typeof activePlatforms === 'string') {
+        try { activePlatforms = JSON.parse(activePlatforms); } 
+        catch { activePlatforms = activePlatforms.split(',').map(i => i.trim()); }
+      }
+      
+      const allOmni = ['facebook', 'instagram', 'telegram', 'twitter'];
+      const disabledOmni = allOmni.filter(p => !activePlatforms.includes(p));
+      
+      if (disabledOmni.length > 0) {
+        const updateQuery = { $set: {} };
+        disabledOmni.forEach(p => {
+           updateQuery.$set[`features.omnichannel_${p}`] = false;
+           updateQuery.$set[`enabled_features.omnichannel_${p}`] = false;
+        });
+        await Plan.updateMany({}, updateQuery);
+      }
     }
 
     if (Object.keys(envVars).length > 0) {
@@ -363,7 +487,29 @@ const updateSetting = async (req, res) => {
       await updateEnvFile(envVars);
     }
 
-    res.status(200).json(setting);
+    const out = setting.toObject ? setting.toObject() : { ...setting };
+
+    try {
+      const pages = await Page.find({ status: true, deleted_at: null });
+      out.pages = pages.map(p => ({ _id: p._id, title: p.title, slug: p.slug }));
+
+      if (out.cookie_text) {
+        const regex = /\[page:([a-zA-Z0-9-_]+)(?:\|([^\]]+))?\]/g;
+        out.cookie_text_parsed = out.cookie_text.replace(regex, (match, slug, customLabel) => {
+          const page = pages.find((p) => p.slug === slug);
+          const label = customLabel || (page ? page.title : slug);
+          return `<a href="/page/${slug}">${label}</a>`;
+        });
+      } else {
+        out.cookie_text_parsed = "";
+      }
+    } catch (err) {
+      console.error("Error processing page shortcodes in settings:", err);
+      out.cookie_text_parsed = out.cookie_text || "";
+      out.pages = [];
+    }
+
+    res.status(200).json(out);
   } catch (error) {
     console.error('Error updating setting:', error);
     res.status(500).json({ error: 'Failed to update settings' });
@@ -407,10 +553,10 @@ const testMail = async (req, res) => {
       });
     }
 
-    const host = (smtp_host != null && String(smtp_host).trim()) ? String(smtp_host).trim() : (process.env.SMTP_HOST || '');
-    const port = (smtp_port != null && smtp_port !== '') ? parseInt(smtp_port, 10) : (parseInt(process.env.SMTP_PORT, 10) || 587);
-    const user = (smtp_user != null && String(smtp_user).trim()) ? String(smtp_user).trim() : (process.env.SMTP_USER || '');
-    const pass = (smtp_pass != null) ? String(smtp_pass) : (process.env.SMTP_PASS || '');
+    const host = (smtp_host != null && String(smtp_host).trim() !== '') ? String(smtp_host).trim() : (process.env.SMTP_HOST || '');
+    const port = (smtp_port != null && String(smtp_port).trim() !== '') ? parseInt(smtp_port, 10) : (parseInt(process.env.SMTP_PORT, 10) || 587);
+    const user = (smtp_user != null && String(smtp_user).trim() !== '') ? String(smtp_user).trim() : (process.env.SMTP_USER || '');
+    const pass = (smtp_pass != null && String(smtp_pass).trim() !== '') ? String(smtp_pass) : (process.env.SMTP_PASS || '');
     const fromName = (mail_from_name != null && String(mail_from_name).trim()) ? String(mail_from_name).trim() : (process.env.MAIL_FROM_NAME || 'WhatsDesk');
     const fromEmail = (mail_from_email != null && String(mail_from_email).trim()) ? String(mail_from_email).trim() : (process.env.MAIL_FROM_EMAIL || user);
 

@@ -1,19 +1,51 @@
-import { Sequence, SequenceStep, ReplyMaterial, Template, EcommerceCatalog } from '../models/index.js';
+import { Sequence, SequenceStep, ReplyMaterial, Template, EcommerceCatalog, WhatsappWaba, TelegramConnection, FacebookConnection, InstagramConnection } from '../models/index.js';
 
 
 export const createSequence = async (req, res) => {
     try {
         const userId = req.user?.owner_id;
-        const { waba_id, name } = req.body;
+        const { name, platform } = req.body;
+        
+        let waba_id = null;
+        let telegram_connection_id = null;
+        let facebook_connection_id = null;
+        let instagram_connection_id = null;
 
-        if (!waba_id || !name) {
-            return res.status(400).json({ success: false, message: 'waba_id and name are required' });
+        const seqPlatform = platform || 'whatsapp';
+
+        if (!name) {
+            return res.status(400).json({ success: false, message: 'name is required' });
+        }
+
+        if (seqPlatform === 'whatsapp' && !waba_id) {
+            const waba = await WhatsappWaba.findOne({ user_id: userId, deleted_at: null });
+            if (waba) waba_id = waba._id;
+            else return res.status(400).json({ success: false, message: 'waba connection is required for whatsapp' });
+        }
+        if (seqPlatform === 'telegram' && !telegram_connection_id) {
+            const telegram = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+            if (telegram) telegram_connection_id = telegram._id;
+            else return res.status(400).json({ success: false, message: 'telegram connection is required for telegram' });
+        }
+        if (seqPlatform === 'facebook' && !facebook_connection_id) {
+            const facebook = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+            if (facebook) facebook_connection_id = facebook._id;
+            else return res.status(400).json({ success: false, message: 'facebook connection is required for facebook' });
+        }
+        if (seqPlatform === 'instagram' && !instagram_connection_id) {
+            const instagram = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+            if (instagram) instagram_connection_id = instagram._id;
+            else return res.status(400).json({ success: false, message: 'instagram connection is required for instagram' });
         }
 
         const sequence = await Sequence.create({
             user_id: userId,
-            waba_id,
-            name
+            waba_id: seqPlatform === 'whatsapp' ? waba_id : null,
+            telegram_connection_id: seqPlatform === 'telegram' ? telegram_connection_id : null,
+            facebook_connection_id: seqPlatform === 'facebook' ? facebook_connection_id : null,
+            instagram_connection_id: seqPlatform === 'instagram' ? instagram_connection_id : null,
+            name,
+            platform: seqPlatform
         });
 
         return res.status(201).json({
@@ -30,17 +62,52 @@ export const createSequence = async (req, res) => {
 export const getSequences = async (req, res) => {
     try {
         const userId = req.user?.owner_id;
-        const { waba_id } = req.query;
+        const { platform } = req.query;
 
-        if (!waba_id) {
-            return res.status(400).json({ success: false, message: 'waba_id is required' });
+        let waba_id = null;
+        let telegram_connection_id = null;
+        let facebook_connection_id = null;
+        let instagram_connection_id = null;
+
+        const query = {
+            user_id: userId,
+            deleted_at: null
+        };
+
+        if (platform && platform !== 'all') {
+            query.platform = platform;
         }
 
-        const sequences = await Sequence.find({
-            user_id: userId,
-            waba_id,
-            deleted_at: null
-        }).sort({ created_at: -1 });
+        const queryPlatform = platform || 'all';
+
+        if (queryPlatform === 'whatsapp') {
+            const waba = await WhatsappWaba.findOne({ user_id: userId, deleted_at: null });
+            if (waba) waba_id = waba._id;
+            else return res.status(400).json({ success: false, message: 'waba_id is required' });
+            
+            query.waba_id = waba_id;
+        } else if (queryPlatform === 'telegram') {
+            const telegram = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+            if (telegram) telegram_connection_id = telegram._id;
+            else return res.status(400).json({ success: false, message: 'telegram_connection_id is required' });
+            
+            query.telegram_connection_id = telegram_connection_id;
+        } else if (queryPlatform === 'facebook') {
+            const facebook = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+            if (facebook) facebook_connection_id = facebook._id;
+            else return res.status(400).json({ success: false, message: 'facebook_connection_id is required' });
+            
+            query.facebook_connection_id = facebook_connection_id;
+        } else if (queryPlatform === 'instagram') {
+            const instagram = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+            if (instagram) instagram_connection_id = instagram._id;
+            else return res.status(400).json({ success: false, message: 'instagram_connection_id is required' });
+            
+            query.instagram_connection_id = instagram_connection_id;
+        } else if (queryPlatform === 'all') {
+        }
+
+        const sequences = await Sequence.find(query).sort({ created_at: -1 });
 
         return res.status(200).json({ success: true, data: sequences });
     } catch (error) {
@@ -86,7 +153,7 @@ export const updateSequence = async (req, res) => {
     try {
         const userId = req.user?.owner_id;
         const { id } = req.params;
-        const { name, is_active } = req.body;
+        const { name, is_active, platform } = req.body;
 
         const sequence = await Sequence.findOne({
             _id: id,
@@ -100,6 +167,7 @@ export const updateSequence = async (req, res) => {
 
         if (name !== undefined) sequence.name = name;
         if (is_active !== undefined) sequence.is_active = is_active;
+        if (platform !== undefined) sequence.platform = platform;
 
         await sequence.save();
 
@@ -198,6 +266,24 @@ export const createSequenceStep = async (req, res) => {
             });
         }
 
+        const sequencePlatform = sequence.platform || 'whatsapp';
+        if (reply_material_type === 'EcommerceCatalog' && sequencePlatform !== 'whatsapp') {
+            return res.status(400).json({
+                success: false,
+                message: 'Ecommerce Catalog is only supported for WhatsApp platform flows.'
+            });
+        }
+
+        if (reply_material_type === 'Template') {
+            const templatePlatform = material.platform || 'whatsapp';
+            if (templatePlatform !== sequencePlatform) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Template platform (${templatePlatform}) does not match the flow platform (${sequencePlatform}).`
+                });
+            }
+        }
+
         const step = await SequenceStep.create({
             sequence_id,
             reply_material_id,
@@ -266,6 +352,24 @@ export const updateSequenceStep = async (req, res) => {
                     success: false,
                     message: `Invalid ${materialType} ID or it doesn't belong to this WABA account`
                 });
+            }
+
+            const sequencePlatform = sequence.platform || 'whatsapp';
+            if (materialType === 'EcommerceCatalog' && sequencePlatform !== 'whatsapp') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Ecommerce Catalog is only supported for WhatsApp platform flows.'
+                });
+            }
+
+            if (materialType === 'Template') {
+                const templatePlatform = material.platform || 'whatsapp';
+                if (templatePlatform !== sequencePlatform) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Template platform (${templatePlatform}) does not match the flow platform (${sequencePlatform}).`
+                    });
+                }
             }
         }
 

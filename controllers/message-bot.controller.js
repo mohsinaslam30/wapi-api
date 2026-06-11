@@ -51,10 +51,12 @@ const buildSearchQuery = (searchTerm) => {
 export const createMessageBot = async (req, res) => {
     try {
         const userId = req.user?.owner_id;
-        const { waba_id, keywords, matching_method, partial_percentage, reply_type, reply_id, variables_mapping, media_url, carousel_cards_data, coupon_code, catalog_id, product_retailer_id } = req.body;
+        const { account_id, waba_id, keywords, matching_method, partial_percentage, reply_type, reply_id, variables_mapping, media_url, carousel_cards_data, coupon_code, catalog_id, product_retailer_id, platform, recipient_type, specific_contacts, tag_ids, segment_ids } = req.body;
 
-        if (!waba_id || !keywords || !reply_type || !reply_id) {
-            return res.status(400).json({ success: false, message: 'waba_id, keywords, reply_type, and reply_id are required' });
+        const activeAccountId = account_id || waba_id;
+
+        if (!activeAccountId || !keywords || !reply_type || !reply_id) {
+            return res.status(400).json({ success: false, message: 'account_id, keywords, reply_type, and reply_id are required' });
         }
 
         const validReplyTypes = ['text', 'media', 'template', 'catalog', 'chatbot', 'agent', 'sequence', 'flow', 'appointment_flow'];
@@ -74,7 +76,7 @@ export const createMessageBot = async (req, res) => {
 
         const messageBot = await MessageBot.create({
             user_id: userId,
-            waba_id,
+            account_id: activeAccountId,
             keywords: Array.isArray(keywords) ? keywords : [keywords],
             matching_method,
             partial_percentage,
@@ -86,7 +88,12 @@ export const createMessageBot = async (req, res) => {
             carousel_cards_data,
             coupon_code,
             catalog_id,
-            product_retailer_id
+            product_retailer_id,
+            platform,
+            recipient_type: recipient_type || 'all_contacts',
+            specific_contacts: specific_contacts || [],
+            tag_ids: tag_ids || [],
+            segment_ids: segment_ids || []
         });
 
         return res.status(201).json({ success: true, message: 'Message bot created successfully', data: messageBot });
@@ -99,10 +106,12 @@ export const createMessageBot = async (req, res) => {
 export const getAllMessageBots = async (req, res) => {
     try {
         const userId = req.user?.owner_id;
-        const { waba_id, status } = req.query;
+        const { account_id, waba_id, status } = req.query;
+        
+        const activeAccountId = account_id || waba_id;
 
-        if (!waba_id) {
-            return res.status(400).json({ success: false, message: 'waba_id is required' });
+        if (!activeAccountId) {
+            return res.status(400).json({ success: false, message: 'account_id is required' });
         }
 
         const { page, limit, skip } = parsePaginationParams(req.query);
@@ -112,18 +121,21 @@ export const getAllMessageBots = async (req, res) => {
         const query = {
             ...searchQuery,
             user_id: userId,
-            waba_id,
+            account_id: activeAccountId,
             deleted_at: null
         };
 
         if (status) query.status = status;
 
         const bots = await MessageBot.find(query)
-            .select('_id keywords matching_method reply_type reply_id status created_at')
+            .select('_id keywords matching_method reply_type reply_id status created_at platform recipient_type specific_contacts tag_ids segment_ids')
             .sort({ [sortField]: sortOrder })
             .skip(skip)
             .limit(limit)
             .populate('reply_id')
+            .populate('specific_contacts', 'name phone_number')
+            .populate('tag_ids', 'label color platform')
+            .populate('segment_ids', 'name platform')
             .lean();
 
         const total = await MessageBot.countDocuments(query);
@@ -152,7 +164,11 @@ export const getMessageBotById = async (req, res) => {
         const userId = req.user?.owner_id;
         const { id } = req.params;
 
-        const bot = await MessageBot.findOne({ _id: id, user_id: userId, deleted_at: null }).populate('reply_id');
+        const bot = await MessageBot.findOne({ _id: id, user_id: userId, deleted_at: null })
+            .populate('reply_id')
+            .populate('specific_contacts', 'name phone_number')
+            .populate('tag_ids', 'label color platform')
+            .populate('segment_ids', 'name platform');
         if (!bot) {
             return res.status(404).json({ success: false, message: 'Message bot not found' });
         }
@@ -188,7 +204,7 @@ export const updateMessageBot = async (req, res) => {
             bot.reply_type_ref = reply_type_ref;
         }
 
-        const allowedFields = ['keywords', 'matching_method', 'partial_percentage', 'reply_type', 'reply_id', 'status', 'variables_mapping', 'media_url', 'carousel_cards_data', 'coupon_code', 'catalog_id', 'product_retailer_id'];
+        const allowedFields = ['keywords', 'matching_method', 'partial_percentage', 'reply_type', 'reply_id', 'status', 'variables_mapping', 'media_url', 'carousel_cards_data', 'coupon_code', 'catalog_id', 'product_retailer_id', 'platform', 'recipient_type', 'specific_contacts', 'tag_ids', 'segment_ids'];
         allowedFields.forEach(field => {
             if (updateData[field] !== undefined) {
                 bot[field] = updateData[field];

@@ -3,8 +3,24 @@ import mongoose from 'mongoose';
 const contactSchema = new mongoose.Schema({
   phone_number: {
     type: String,
-    required: true,
+    required: false,
     trim: true,
+    index: true
+  },
+  telegram_chat_id: {
+    type: String,
+    index: true
+  },
+  facebook_page_scoped_id: {
+    type: String,
+    index: true
+  },
+  instagram_scoped_id: {
+    type: String,
+    index: true
+  },
+  twitter_user_id: {
+    type: String,
     index: true
   },
   name: {
@@ -14,7 +30,7 @@ const contactSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['whatsapp', 'baileys'],
+    enum: ['whatsapp', 'baileys', 'telegram', 'facebook', 'instagram', 'twitter'],
     default: 'whatsapp'
   },
   assigned_to: {
@@ -133,7 +149,11 @@ const contactSchema = new mongoose.Schema({
   collection: 'contacts'
 });
 
-contactSchema.index({ phone_number: 1, user_id: 1 }, { unique: true });
+contactSchema.index({ phone_number: 1, user_id: 1 });
+contactSchema.index({ telegram_chat_id: 1, user_id: 1 });
+contactSchema.index({ facebook_page_scoped_id: 1, user_id: 1 });
+contactSchema.index({ instagram_scoped_id: 1, user_id: 1 });
+contactSchema.index({ twitter_user_id: 1, user_id: 1 });
 contactSchema.index({ user_id: 1 });
 contactSchema.index({ created_by: 1 });
 contactSchema.index({ assigned_to: 1 });

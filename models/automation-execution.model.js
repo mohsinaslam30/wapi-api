@@ -11,6 +11,11 @@ const automationExecutionSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  workspace_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    required: false
+  },
   status: {
     type: String,
     enum: ['pending', 'running', 'waiting', 'success', 'failed', 'cancelled'],

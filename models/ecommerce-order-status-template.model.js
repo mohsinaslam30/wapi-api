@@ -18,8 +18,24 @@ const ecommerceOrderStatusTemplateSchema = new mongoose.Schema({
 
   message_template: {
     type: String,
-    required: true,
-    trim: true
+    trim: true,
+    default: ''
+  },
+
+  use_approved_template: {
+    type: Boolean,
+    default: false
+  },
+
+  approved_template_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Template',
+    default: null
+  },
+
+  variable_mappings: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   },
 
   is_active: {

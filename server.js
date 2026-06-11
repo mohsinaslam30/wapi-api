@@ -7,11 +7,13 @@ import Setting from './models/setting.model.js';
 import campaignScheduler from './utils/campaign-scheduler.js';
 import automatedResponseWorker from './utils/automated-response-worker.js';
 import { fixSettingsData } from './utils/fix-settings-data.js';
+import { fixPlatformData } from './utils/fix-platform-data.js';
 import { setContactImportSocketIo } from './queues/contact-import-queue.js';
 import './utils/system-settings.js';
 import { getSequenceQueue } from './queues/sequence-queue.js';
 import statusCronService from './cronjob/status.cronService.js';
 import trialPeriodCronService from './cronjob/trialPeriod.cronService.js';
+// import twitterPollCronService from './cronjob/twitter-poll.cronService.js'; // DISABLED: Twitter not working
 import EmailTemplateService from './services/email-template.service.js';
 
 async function loadStripeKeysFromSettings() {
@@ -73,7 +75,7 @@ import('./services/whatsapp/unified-whatsapp.service.js').then(module => {
 io.on('connection', (socket) => {
   console.log('WebSocket client connected:', socket.id);
   socket.on('disconnect', () => {
-
+ 
   });
 });
 
@@ -83,8 +85,10 @@ io.on('connection', (socket) => {
     await loadStripeKeysFromSettings();
     await loadRazorpayKeysFromSettings();
     await fixSettingsData();
+    await fixPlatformData();
     await statusCronService();
     await trialPeriodCronService();
+    // await twitterPollCronService(app); // DISABLED: Twitter not working
     await EmailTemplateService.init();
 
 

@@ -115,6 +115,11 @@ const userSchema = new mongoose.Schema({
   storage_used: {
     type: Number,
     default: 0
+  },
+  round_robin_last_agent_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

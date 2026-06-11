@@ -3,9 +3,18 @@ import Setting from "../models/setting.model.js";
 
 const getAllSettings = asyncHandler(async (req, res) => {
   const settings = await Setting.findOne();
+  if (!settings) {
+    return res.status(200).json({});
+  }
 
+  const out = settings.toObject ? settings.toObject() : { ...settings };
+  out.is_banner = settings.is_banner !== undefined ? settings.is_banner : false;
+  out.banner_text = settings.banner_text !== undefined ? settings.banner_text : 'Welcome to our platform! Enjoy our premium services.';
+  out.banner_possion = settings.banner_possion !== undefined ? settings.banner_possion : 'center';
+  out.banner_bg_color = settings.banner_bg_color !== undefined ? settings.banner_bg_color : '#f59e0b';
+  out.banner_text_color = settings.banner_text_color !== undefined ? settings.banner_text_color : '#000000';
 
-  res.status(200).json(settings || {});
+  res.status(200).json(out);
 });
 
 const updateSetting = asyncHandler(async (req, res) => {
@@ -48,10 +57,6 @@ const updateSetting = asyncHandler(async (req, res) => {
   }
 
   if (setting) {
-    const updatedSetting = await Setting.findByIdAndUpdate(setting._id, processedBody, {
-      returnDocument: 'after',
-      runValidators: true,
-    });
     res.status(200).json(updatedSetting);
   } else {
     const newSetting = await Setting.create(processedBody);

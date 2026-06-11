@@ -1,5 +1,10 @@
 import { Chatbot, AIModel } from '../models/index.js';
 import mongoose from 'mongoose';
+import axios from 'axios';
+import fs from 'fs';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdf = require('pdf-parse');
 
 const buildSystemPrompt = (data) => {
     const { business_name, business_description, training_data, raw_training_text } = data;
@@ -29,10 +34,10 @@ const buildSystemPrompt = (data) => {
 export const createChatbot = async (req, res) => {
     try {
         const userId = req.user.owner_id;
-        const { waba_id, name, ai_model, api_key, business_name, business_description } = req.body;
+        const { name, ai_model, api_key, business_name, business_description } = req.body;
 
-        if (!waba_id || !name || !ai_model || !api_key) {
-            return res.status(400).json({ success: false, message: 'waba_id, name, ai_model, and api_key are required' });
+        if (!name || !ai_model || !api_key) {
+            return res.status(400).json({ success: false, message: 'name, ai_model, and api_key are required' });
         }
 
         const model = await AIModel.findOne({ _id: ai_model, status: 'active', deleted_at: null });
@@ -48,7 +53,6 @@ export const createChatbot = async (req, res) => {
         const chatbot = await Chatbot.create({
             user_id: req.user.owner_id,
             created_by: req.user.id,
-            waba_id,
             name,
             ai_model,
             api_key,
@@ -75,13 +79,9 @@ export const createChatbot = async (req, res) => {
 export const getAllChatbots = async (req, res) => {
     try {
         const userId = req.user.owner_id;
-        const { waba_id, search } = req.query;
+        const { search } = req.query;
 
-        if (!waba_id) {
-            return res.status(400).json({ success: false, message: 'waba_id is required' });
-        }
-
-        const query = { user_id: userId, waba_id, deleted_at: null };
+        const query = { user_id: userId, deleted_at: null };
 
         if (search) {
             query.$or = [
@@ -227,7 +227,7 @@ export const trainChatbot = async (req, res) => {
         } else if (raw_training_text !== undefined) {
             chatbot.raw_training_text = raw_training_text;
         } else {
-  
+
             if (training_data !== undefined) chatbot.training_data = training_data;
             if (raw_training_text !== undefined) chatbot.raw_training_text = raw_training_text;
         }
@@ -251,11 +251,128 @@ export const trainChatbot = async (req, res) => {
     }
 };
 
+
+
+export const scrapeUrl = async (req, res) => {
+    try {
+        const { url } = req.body;
+        if (!url) {
+            return res.status(400).json({ success: false, message: 'URL is required' });
+        }
+
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 15000
+        });
+
+        let html = response.data;
+        if (typeof html !== 'string') {
+            return res.status(400).json({ success: false, message: 'Invalid page response' });
+        }
+
+        html = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+        html = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        html = html.replace(/<!--[\s\S]*?-->/g, '');
+
+        const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        let bodyHtml = bodyMatch ? bodyMatch[1] : html;
+
+        bodyHtml = bodyHtml.replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '');
+        bodyHtml = bodyHtml.replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '');
+        bodyHtml = bodyHtml.replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '');
+
+        let text = bodyHtml.replace(/<[^>]*>/g, ' ');
+
+        text = text
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'");
+
+        text = text.replace(/\s+/g, ' ').trim();
+
+        const maxLength = 100000;
+        if (text.length > maxLength) {
+            text = text.substring(0, maxLength) + '...';
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: { text }
+        });
+    } catch (error) {
+        console.error('URL Scraping error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to scrape URL',
+            error: error.message
+        });
+    }
+};
+
+export const extractDocument = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+
+        const filePath = req.file.path;
+        const originalName = req.file.originalname.toLowerCase();
+        let extractedText = '';
+
+        if (originalName.endsWith('.txt')) {
+            extractedText = fs.readFileSync(filePath, 'utf8');
+        } else if (originalName.endsWith('.csv')) {
+            extractedText = fs.readFileSync(filePath, 'utf8');
+        } else if (originalName.endsWith('.pdf')) {
+            const dataBuffer = fs.readFileSync(filePath);
+            const pdfData = await pdf(dataBuffer);
+            extractedText = pdfData.text || '';
+        } else {
+            try { fs.unlinkSync(filePath); } catch (_) { }
+            return res.status(400).json({
+                success: false,
+                message: 'Unsupported file format. Please upload a .txt, .csv, or .pdf file.'
+            });
+        }
+
+        try { fs.unlinkSync(filePath); } catch (_) { }
+
+        extractedText = extractedText.replace(/\s+/g, ' ').trim();
+
+        const maxLength = 100000;
+        if (extractedText.length > maxLength) {
+            extractedText = extractedText.substring(0, maxLength) + '...';
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: { text: extractedText }
+        });
+    } catch (error) {
+        console.error('Document extraction error:', error);
+        if (req.file && req.file.path) {
+            try { fs.unlinkSync(req.file.path); } catch (_) { }
+        }
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to extract document',
+            error: error.message
+        });
+    }
+};
+
 export default {
     createChatbot,
     getAllChatbots,
     getChatbotById,
     updateChatbot,
     deleteChatbot,
-    trainChatbot
+    trainChatbot,
+    scrapeUrl,
+    extractDocument
 };

@@ -188,6 +188,18 @@ export const modules = {
             USER: ['view', 'create', 'update', 'delete'],
         }
     },
+    socialAutomations: {
+        actions: {
+            view: 'view.automations',
+            create: 'create.automations',
+            update: 'update.automations',
+            delete: 'delete.automations',
+        },
+        roles: {
+            ADMIN: ['view', 'create', 'update', 'delete'],
+            USER: ['view', 'create', 'update', 'delete'],
+        }
+    },
     contactInquiries: {
         actions: {
             view: 'view.contact_inquiries',

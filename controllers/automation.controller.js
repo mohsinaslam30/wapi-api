@@ -52,6 +52,7 @@ const buildSearchQuery = (searchTerm) => {
 export const getAutomationFlows = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
     const { page, limit, skip } = parsePaginationParams(req.query);
     const { sortField, sortOrder } = parseSortParams(req.query);
     const searchQuery = buildSearchQuery(req.query.search);
@@ -61,6 +62,9 @@ export const getAutomationFlows = async (req, res) => {
     if (searchQuery) {
       searchQuery.user_id = userId;
       searchQuery.deleted_at = null;
+      if (workspaceId) {
+        searchQuery.workspace_id = workspaceId;
+      }
     }
 
     if (is_active !== '') {
@@ -100,13 +104,20 @@ export const getAutomationFlows = async (req, res) => {
 export const getAutomationFlow = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
     const { flowId } = req.params;
 
-    const flow = await AutomationFlow.findOne({
+    const query = {
       _id: flowId,
       user_id: userId,
       deleted_at: null
-    }).populate('user_id', 'name email');
+    };
+
+    if (workspaceId) {
+      query.workspace_id = workspaceId;
+    }
+
+    const flow = await AutomationFlow.findOne(query).populate('user_id', 'name email');
 
     if (!flow) {
       return res.status(404).json({
@@ -133,7 +144,8 @@ export const getAutomationFlow = async (req, res) => {
 export const createAutomationFlow = async (req, res) => {
   try {
     const userId = req.user.owner_id;
-    const { name, description, nodes, connections, triggers, settings } = req.body;
+    const workspaceId = req.headers['x-workspace-id'] || req.body.workspace_id;
+    const { name, description, nodes, connections, triggers, settings, platform } = req.body;
 
     if (!name || !nodes || !Array.isArray(nodes)) {
       return res.status(400).json({
@@ -146,6 +158,8 @@ export const createAutomationFlow = async (req, res) => {
       name,
       description: description || '',
       user_id: userId,
+      workspace_id: workspaceId || null,
+      platform: platform || 'whatsapp',
       nodes: nodes || [],
       connections: connections || [],
       triggers: triggers || [],
@@ -173,14 +187,21 @@ export const createAutomationFlow = async (req, res) => {
 export const updateAutomationFlow = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.body.workspace_id;
     const { flowId } = req.params;
-    const { name, description, nodes, connections, triggers, settings, is_active } = req.body;
+    const { name, description, nodes, connections, triggers, settings, is_active, platform } = req.body;
 
-    const flow = await AutomationFlow.findOne({
+    const query = {
       _id: flowId,
       user_id: userId,
       deleted_at: null
-    });
+    };
+
+    if (workspaceId) {
+      query.workspace_id = workspaceId;
+    }
+
+    const flow = await AutomationFlow.findOne(query);
 
     if (!flow) {
       return res.status(404).json({
@@ -196,6 +217,8 @@ export const updateAutomationFlow = async (req, res) => {
     if (triggers !== undefined) flow.triggers = triggers;
     if (settings !== undefined) flow.settings = settings;
     if (is_active !== undefined) flow.is_active = is_active;
+    if (platform !== undefined) flow.platform = platform;
+    if (workspaceId !== undefined) flow.workspace_id = workspaceId;
 
     await flow.save();
 
@@ -220,13 +243,20 @@ export const updateAutomationFlow = async (req, res) => {
 export const deleteAutomationFlow = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
     const { flowId } = req.params;
 
-    const flow = await AutomationFlow.findOne({
+    const query = {
       _id: flowId,
       user_id: userId,
       deleted_at: null
-    });
+    };
+
+    if (workspaceId) {
+      query.workspace_id = workspaceId;
+    }
+
+    const flow = await AutomationFlow.findOne(query);
 
     if (!flow) {
       return res.status(404).json({
@@ -258,14 +288,21 @@ export const deleteAutomationFlow = async (req, res) => {
 export const toggleAutomationFlow = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
     const { flowId } = req.params;
     const { is_active } = req.body;
 
-    const flow = await AutomationFlow.findOne({
+    const query = {
       _id: flowId,
       user_id: userId,
       deleted_at: null
-    });
+    };
+
+    if (workspaceId) {
+      query.workspace_id = workspaceId;
+    }
+
+    const flow = await AutomationFlow.findOne(query);
 
     if (!flow) {
       return res.status(404).json({
@@ -342,6 +379,7 @@ export const testAutomationFlow = async (req, res) => {
 export const getAutomationExecutions = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
     const { flowId } = req.params;
     const { page = 1, limit = 10, status = '' } = req.query;
 
@@ -351,6 +389,9 @@ export const getAutomationExecutions = async (req, res) => {
     }
     if (status) {
       filter.status = status;
+    }
+    if (workspaceId) {
+      filter.workspace_id = workspaceId;
     }
 
     const skip = (page - 1) * limit;
@@ -388,12 +429,19 @@ export const getAutomationExecutions = async (req, res) => {
 export const getAutomationExecution = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
     const { executionId } = req.params;
 
-    const execution = await AutomationExecution.findOne({
+    const query = {
       _id: executionId,
       user_id: userId
-    }).populate('flow_id', 'name description')
+    };
+
+    if (workspaceId) {
+      query.workspace_id = workspaceId;
+    }
+
+    const execution = await AutomationExecution.findOne(query).populate('flow_id', 'name description')
       .populate('user_id', 'name email');
 
     if (!execution) {
@@ -421,17 +469,28 @@ export const getAutomationExecution = async (req, res) => {
 export const getAutomationStatistics = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.headers['x-workspace-id'] || req.query.workspace_id;
+
+    const flowQuery = { user_id: userId, deleted_at: null };
+    const activeFlowQuery = { user_id: userId, is_active: true, deleted_at: null };
+    const execQuery = { user_id: userId };
+    const successExecQuery = { user_id: userId, status: 'success' };
+
+    if (workspaceId) {
+      flowQuery.workspace_id = workspaceId;
+      activeFlowQuery.workspace_id = workspaceId;
+      execQuery.workspace_id = workspaceId;
+      successExecQuery.workspace_id = workspaceId;
+    }
 
     const [totalFlows, activeFlows, totalExecutions, successfulExecutions] = await Promise.all([
-      AutomationFlow.countDocuments({ user_id: userId, deleted_at: null }),
-      AutomationFlow.countDocuments({ user_id: userId, is_active: true, deleted_at: null }),
-      AutomationExecution.countDocuments({ user_id: userId }),
-      AutomationExecution.countDocuments({ user_id: userId, status: 'success' })
+      AutomationFlow.countDocuments(flowQuery),
+      AutomationFlow.countDocuments(activeFlowQuery),
+      AutomationExecution.countDocuments(execQuery),
+      AutomationExecution.countDocuments(successExecQuery)
     ]);
 
-    const recentExecutions = await AutomationExecution.find({
-      user_id: userId
-    })
+    const recentExecutions = await AutomationExecution.find(execQuery)
       .sort({ created_at: -1 })
       .limit(10)
       .select('flow_id status created_at execution_time');

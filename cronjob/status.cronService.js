@@ -11,11 +11,12 @@ async function statusCronService() {
 
             const expiredSubs = await Subscription.find({
                 status: { $in: ['active', 'trial'] },
-                current_period_end: { $lte: today },
+                current_period_end: { $lte: today, $ne: null },
                 deleted_at: null
             }).populate('user_id plan_id');
 
             for (const sub of expiredSubs) {
+                if (sub.plan_id?.billing_cycle === 'lifetime') continue;
                 const oldStatus = sub.status;
                 sub.status = sub.auto_renew ? 'expired' : 'canceled';
                 sub.expires_at = sub.current_period_end;
@@ -37,12 +38,14 @@ async function statusCronService() {
                 status: { $in: ['active', 'trial'] },
                 current_period_end: {
                     $gte: reminderDate,
-                    $lt: new Date(reminderDate.getTime() + 24 * 60 * 60 * 1000)
+                    $lt: new Date(reminderDate.getTime() + 24 * 60 * 60 * 1000),
+                    $ne: null
                 },
                 deleted_at: null
             }).populate('user_id plan_id');
 
             for (const sub of upcomingExpirations) {
+                if (sub.plan_id?.billing_cycle === 'lifetime') continue;
                 if (sub.user_id && sub.user_id.email) {
                     await EmailTemplateService.send('plan-renewal', sub.user_id.email, {
                         user_name: sub.user_id.name,

@@ -15,9 +15,19 @@ const automationFlowSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  workspace_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    required: false
+  },
   is_active: {
     type: Boolean,
     default: true
+  },
+  platform: {
+    type: String,
+    enum: ['whatsapp', 'telegram', 'facebook', 'instagram', 'baileys', 'all'],
+    default: 'whatsapp'
   },
   is_public: {
     type: Boolean,
@@ -42,6 +52,9 @@ const automationFlowSchema = new mongoose.Schema({
             'send_message',
             'send_template',
             'add_tag',
+            'remove_tag',
+            'assign_agent',
+            'assign_random_agent',
             'cta_button',
             'assign_chatbot',
             'update_contact',

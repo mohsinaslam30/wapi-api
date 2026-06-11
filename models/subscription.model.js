@@ -256,11 +256,14 @@ subscriptionSchema.query.active = function () {
 };
 
 subscriptionSchema.methods.isActive = function () {
+    const isLifetime = (this.plan_id && typeof this.plan_id === 'object' && this.plan_id.billing_cycle === 'lifetime') || !this.current_period_end;
     return ['active', 'trial'].includes(this.status) &&
-        new Date() <= this.current_period_end;
+        (isLifetime || new Date() <= this.current_period_end);
 };
 
 subscriptionSchema.methods.isExpired = function () {
+    const isLifetime = (this.plan_id && typeof this.plan_id === 'object' && this.plan_id.billing_cycle === 'lifetime') || !this.current_period_end;
+    if (isLifetime) return false;
     return new Date() > this.current_period_end;
 };
 

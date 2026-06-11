@@ -400,15 +400,17 @@ const handleCheckoutSessionCompleted = async (session) => {
         let priceId = null;
         let plan = null;
 
+        const expand = ['line_items.data.price'];
         if (isSubscriptionMode) {
-            const fullSession = await stripe.checkout.sessions.retrieve(sessionId, {
-                expand: ['line_items.data.price', 'subscription']
-            });
-            priceId = fullSession.line_items?.data?.[0]?.price?.id;
-            if (!priceId) {
-                const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, { expand: ['data.price'] });
-                priceId = lineItems?.data?.[0]?.price?.id;
-            }
+            expand.push('subscription');
+        }
+        const fullSession = await stripe.checkout.sessions.retrieve(sessionId, {
+            expand
+        });
+        priceId = fullSession.line_items?.data?.[0]?.price?.id;
+        if (!priceId) {
+            const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, { expand: ['data.price'] });
+            priceId = lineItems?.data?.[0]?.price?.id;
         }
 
         if (priceId) {
@@ -454,6 +456,11 @@ const handleCheckoutSessionCompleted = async (session) => {
             periodEnd = calculatePeriodEnd(now, plan.billing_cycle || 'monthly');
         }
 
+        const isLifetime = plan.billing_cycle === 'lifetime';
+        if (isLifetime) {
+            periodEnd = null;
+        }
+
         const stripeCustomerId = session.customer
             ? (typeof session.customer === 'string' ? session.customer : session.customer.id)
             : null;
@@ -480,7 +487,7 @@ const handleCheckoutSessionCompleted = async (session) => {
             subscription.current_period_start = periodStart;
             subscription.current_period_end = periodEnd;
             subscription.trial_ends_at = trialEndsAt;
-            subscription.auto_renew = !!stripeSubscriptionId;
+            subscription.auto_renew = isLifetime ? false : !!stripeSubscriptionId;
             await subscription.save();
 
             await PaymentHistory.create({
@@ -525,7 +532,7 @@ const handleCheckoutSessionCompleted = async (session) => {
                 stripe_customer_id: stripeCustomerId,
                 taxes: plan.taxes || [],
                 features: plan.features,
-                auto_renew: !!stripeSubscriptionId
+                auto_renew: isLifetime ? false : !!stripeSubscriptionId
             });
 
             if (stripeCustomerId) {

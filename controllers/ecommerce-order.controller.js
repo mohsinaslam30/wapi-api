@@ -1,4 +1,4 @@
-import { EcommerceOrder, EcommerceOrderStatusTemplate, EcommerceProduct, WhatsappPhoneNumber } from '../models/index.js';
+import { EcommerceOrder, EcommerceOrderStatusTemplate, EcommerceProduct, WhatsappPhoneNumber, PaymentTransaction } from '../models/index.js';
 import UnifiedWhatsAppService from '../services/whatsapp/unified-whatsapp.service.js';
 import { ECOMMERCE_ORDER_STATUSES } from '../models/ecommerce-order.model.js';
 
@@ -68,7 +68,7 @@ const getStatusTemplateForUser = async (userId, status) => {
     status,
     is_active: true,
     deleted_at: null
-  }).lean();
+  }).populate('approved_template_id').lean();
 };
 
 
@@ -106,6 +106,17 @@ export const getUserOrders = async (req, res) => {
       .skip(skip)
       .limit(limit)
       .lean();
+
+    const orderIds = orders.map(order => order._id);
+    const transactions = await PaymentTransaction.find({
+      context: 'catalog',
+      context_id: { $in: orderIds }
+    }).select('context_id status payment_link').lean();
+
+    const transactionMap = {};
+    transactions.forEach(t => {
+      transactionMap[String(t.context_id)] = t;
+    });
 
 
     const allRetailerIds = [
@@ -146,7 +157,13 @@ export const getUserOrders = async (req, res) => {
         };
         return pa;
       });
-      let paa = { ...order, items };
+      const transaction = transactionMap[String(order._id)];
+      let paa = {
+        ...order,
+        items,
+        payment_link_sent: !!transaction,
+        payment_link: transaction?.payment_link || null
+      };
       console.log("products" , paa);
       return paa;
     });
@@ -225,9 +242,16 @@ export const getOrderById = async (req, res) => {
       });
     }
 
+    const transaction = await PaymentTransaction.findOne({
+      context: 'catalog',
+      context_id: order._id
+    }).select('status payment_link').lean();
+
     const orderWithProductDetails = {
       ...order.toObject(),
-      items: itemsWithProductDetails
+      items: itemsWithProductDetails,
+      payment_link_sent: !!transaction,
+      payment_link: transaction?.payment_link || null
     };
 
     return res.json({
@@ -384,6 +408,68 @@ export const getOrderStats = async (req, res) => {
 };
 
 
+export const sendOrderStatusNotification = async (order, status) => {
+  try {
+    const userId = order.user_id;
+    const contactPhone = order.contact_id?.phone_number;
+    if (!contactPhone) return null;
+
+    const tmplDoc = await getStatusTemplateForUser(userId, status);
+    const itemsSummary = formatItemsSummary(order.items);
+
+    const placeholderValues = {
+      status: status,
+      wa_order_id: order.wa_order_id || 'N/A',
+      order_id: order._id?.toString(),
+      total_price: (order.total_price || 0).toFixed(2),
+      currency: order.currency || 'INR',
+      customer_name: order?.contact_id?.name || 'Guest',
+      customer_phone: contactPhone || 'N/A',
+      items_count: Array.isArray(order.items) ? order.items.length : 0,
+      items_summary: itemsSummary || 'N/A'
+    };
+
+    let whatsappPhoneNumber = await WhatsappPhoneNumber.findById(order.phone_no_id)
+      .populate('waba_id')
+      .lean();
+
+    let sendRes;
+    if (tmplDoc?.use_approved_template && tmplDoc?.approved_template_id) {
+      const templateDoc = tmplDoc.approved_template_id;
+      const templateVariables = {};
+      if (tmplDoc.variable_mappings) {
+        for (const [key, placeholderKey] of Object.entries(tmplDoc.variable_mappings)) {
+          templateVariables[key] = placeholderValues[placeholderKey] !== undefined ? placeholderValues[placeholderKey] : placeholderKey;
+        }
+      }
+
+      sendRes = await UnifiedWhatsAppService.sendMessage(userId, {
+        whatsappPhoneNumber: whatsappPhoneNumber,
+        recipientNumber: contactPhone,
+        messageType: 'template',
+        templateName: templateDoc.template_name,
+        languageCode: templateDoc.language || 'en_US',
+        templateVariables
+      });
+    } else {
+      const messageText = tmplDoc?.message_template
+        ? renderTemplate(tmplDoc.message_template, placeholderValues)
+        : `Your order ${order.wa_order_id || order._id.toString()} status is now: ${status}`;
+
+      sendRes = await UnifiedWhatsAppService.sendMessage(userId, {
+        whatsappPhoneNumber: whatsappPhoneNumber,
+        recipientNumber: contactPhone,
+        messageText,
+        messageType: 'text'
+      });
+    }
+    return sendRes;
+  } catch (err) {
+    console.error('Error sending order status notification:', err);
+    throw err;
+  }
+};
+
 export const updateOrderStatus = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -413,6 +499,33 @@ export const updateOrderStatus = async (req, res) => {
     order.status = status;
     await order.save();
 
+    if (status === 'confirmed') {
+      try {
+        const { default: UserSetting } = await import('../models/user-setting.model.js');
+        const settings = await UserSetting.findOne({ user_id: userId }).lean();
+        if (settings?.catalog_payment_link_enabled && settings?.catalog_payment_link_automatic) {
+          console.log("calleeddd paymentlink")
+          const { default: paymentLinkService } = await import('../services/payment-link.service.js');
+          const itemsSummary = formatItemsSummary(order.items);
+          const description = itemsSummary ? `Order items: ${itemsSummary}` : `Order ${order.wa_order_id || order._id}`;
+          await paymentLinkService.sendPaymentLink({
+            context: 'catalog',
+            context_id: order._id,
+            user_id: userId,
+            contact_id: order.contact_id._id || order.contact_id,
+            gateway_config_id: settings.catalog_payment_link_gateway || undefined,
+            amount: Math.round((order.total_price || 0) * 100),
+            currency: order.currency || 'INR',
+            description,
+            whatsapp_phone_number_id: order.phone_no_id
+          });
+          console.log(`[Order Status Update] Automatically sent payment link for confirmed order: ${order._id}`);
+        }
+      } catch (paymentLinkErr) {
+        console.error('Error automatically sending payment link on order status confirm:', paymentLinkErr);
+      }
+    }
+
     let notification = {
       attempted: false,
       sent: false,
@@ -423,35 +536,8 @@ export const updateOrderStatus = async (req, res) => {
     const contactPhone = order?.contact_id?.phone_number;
     if (contactPhone) {
       notification.attempted = true;
-
-      const tmplDoc = await getStatusTemplateForUser(userId, status);
-      const itemsSummary = formatItemsSummary(order.items);
-
-      const messageText = tmplDoc?.message_template
-        ? renderTemplate(tmplDoc.message_template, {
-            status: order.status,
-            wa_order_id: order.wa_order_id,
-            order_id: order._id?.toString(),
-            total_price: order.total_price,
-            currency: order.currency,
-            customer_name: order?.contact_id?.name,
-            customer_phone: contactPhone,
-            items_count: Array.isArray(order.items) ? order.items.length : 0,
-            items_summary: itemsSummary
-          })
-        : `Your order ${order.wa_order_id || order._id.toString()} status is now: ${order.status}`;
-
       try {
-        let whatsappPhoneNumber = await WhatsappPhoneNumber.findById(order.phone_no_id)
-          .populate('waba_id')
-          .lean();
-
-        const sendRes = await UnifiedWhatsAppService.sendMessage(userId, {
-          whatsappPhoneNumber: whatsappPhoneNumber,
-          recipientNumber: contactPhone,
-          messageText,
-          messageType: 'text'
-        });
+        const sendRes = await sendOrderStatusNotification(order, status);
         notification.sent = true;
         notification.wa_message_id = sendRes?.waMessageId || null;
       } catch (sendErr) {
@@ -476,12 +562,17 @@ export const updateOrderStatus = async (req, res) => {
   }
 };
 
-
 export const upsertOrderStatusTemplate = async (req, res) => {
   try {
     const userId = req.user.id;
     const { status } = req.params;
-    const { message_template, is_active } = req.body || {};
+    const {
+      message_template,
+      is_active,
+      use_approved_template,
+      approved_template_id,
+      variable_mappings
+    } = req.body || {};
 
     if (!status || !ECOMMERCE_ORDER_STATUSES.includes(status)) {
       return res.status(400).json({
@@ -490,18 +581,30 @@ export const upsertOrderStatusTemplate = async (req, res) => {
       });
     }
 
-    if (!message_template || typeof message_template !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: 'message_template is required'
-      });
+    if (use_approved_template) {
+      if (!approved_template_id) {
+        return res.status(400).json({
+          success: false,
+          error: 'approved_template_id is required when using an approved template'
+        });
+      }
+    } else {
+      if (!message_template || typeof message_template !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: 'message_template is required'
+        });
+      }
     }
 
     const doc = await EcommerceOrderStatusTemplate.findOneAndUpdate(
       { user_id: userId, status, deleted_at: null },
       {
         $set: {
-          message_template,
+          message_template: message_template || '',
+          use_approved_template: !!use_approved_template,
+          approved_template_id: approved_template_id || null,
+          variable_mappings: variable_mappings || {},
           ...(is_active !== undefined ? { is_active: !!is_active } : {})
         }
       },
@@ -550,6 +653,7 @@ export const getOrderStatusTemplates = async (req, res) => {
     }
 
     const templates = await EcommerceOrderStatusTemplate.find(filter)
+      .populate('approved_template_id')
       .sort({ updated_at: -1 })
       .lean();
 
@@ -618,6 +722,66 @@ export const bulkDeleteOrders = async (req, res) => {
   }
 };
 
+export const sendOrderPaymentLink = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { order_id } = req.params;
+
+    const order = await EcommerceOrder.findOne({
+      _id: order_id,
+      user_id: userId,
+      deleted_at: null
+    }).populate('contact_id');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'Order not found'
+      });
+    }
+
+    const { default: UserSetting } = await import('../models/user-setting.model.js');
+    const settings = await UserSetting.findOne({ user_id: userId }).lean();
+
+    if (!settings?.catalog_payment_link_enabled) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment link feature is not enabled for catalogs. Please enable it in Settings.'
+      });
+    }
+
+    const { default: paymentLinkService } = await import('../services/payment-link.service.js');
+
+    const itemsSummary = formatItemsSummary(order.items);
+    const description = itemsSummary ? `Order items: ${itemsSummary}` : `Order ${order.wa_order_id || order._id}`;
+
+    const result = await paymentLinkService.sendPaymentLink({
+      context: 'catalog',
+      context_id: order._id,
+      user_id: userId,
+      contact_id: order.contact_id._id || order.contact_id,
+      gateway_config_id: settings.catalog_payment_link_gateway || undefined,
+      amount: Math.round((order.total_price || 0) * 100),
+      currency: order.currency || 'INR',
+      description,
+      whatsapp_phone_number_id: order.phone_no_id
+    });
+
+    return res.json({
+      success: true,
+      message: 'Payment link sent successfully',
+      data: result
+    });
+  } catch (error) {
+    console.error('Error sending order payment link:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to send payment link',
+      details: error.message
+    });
+  }
+};
+
 export default {
   getUserOrders,
   getOrderById,
@@ -626,5 +790,6 @@ export default {
   updateOrderStatus,
   upsertOrderStatusTemplate,
   getOrderStatusTemplates,
-  bulkDeleteOrders
+  bulkDeleteOrders,
+  sendOrderPaymentLink
 };

@@ -1,5 +1,8 @@
 import { AutomationFlow, AutomationExecution, Contact, EcommerceOrder, Message, WhatsappPhoneNumber, Template, Tag, ContactTag, ChatAssignment, Chatbot, ReplyMaterial } from '../models/index.js';
 import unifiedWhatsAppService from '../services/whatsapp/unified-whatsapp.service.js';
+import BusinessAPIProvider from '../services/whatsapp/providers/business-api.provider.js';
+
+const businessApiProvider = new BusinessAPIProvider();
 import { getSheetsClient, getCalendarClient, handleGoogleApiError } from './google-api-helper.js';
 import { PROVIDER_TYPES } from '../services/whatsapp/unified-whatsapp.service.js';
 import appointmentService from '../services/appointment.service.js';
@@ -45,8 +48,16 @@ class AutomationEngine {
       const triggers = await automationCache.getUserActiveFlows(userId);
       console.log(`Found ${triggers.length} triggers for user ${userId}`);
 
-      const orderTriggers = triggers.filter(t => t.event_type === 'order_received');
-      console.log(`Found ${orderTriggers.length} order received triggers`);
+      const incomingWorkspaceId = eventData.workspaceId ? eventData.workspaceId.toString() : null;
+      console.log(`Incoming workspaceId: ${incomingWorkspaceId}`);
+
+      const workspaceTriggers = triggers.filter(t => {
+        const triggerWorkspaceId = t.workspace_id ? t.workspace_id.toString() : null;
+        return !triggerWorkspaceId || !incomingWorkspaceId || triggerWorkspaceId === incomingWorkspaceId;
+      });
+
+      const orderTriggers = workspaceTriggers.filter(t => t.event_type === 'order_received');
+      console.log(`Found ${orderTriggers.length} order received triggers for workspace`);
 
       for (const trigger of orderTriggers) {
         let flow = automationCache.getFlow(trigger.flow_id.toString());
@@ -111,7 +122,7 @@ class AutomationEngine {
   async handleMessageReceived(eventData) {
     try {
       console.log("=====================handleMessageReceived called", eventData);
-      const { message, senderNumber, recipientNumber, userId, messageType } = eventData;
+      const { message, senderNumber, recipientNumber, userId, messageType, interactive_id } = eventData;
       const normalizedMessagePayload = this.normalizeMessagePayload(message);
 
       let contact = null;
@@ -124,7 +135,12 @@ class AutomationEngine {
           }).lean();
         } else if (senderNumber) {
           contact = await Contact.findOne({
-            phone_number: senderNumber,
+            $or: [
+              { phone_number: senderNumber },
+              { telegram_chat_id: senderNumber },
+              { facebook_page_scoped_id: senderNumber },
+              { instagram_scoped_id: senderNumber }
+            ],
             created_by: userId,
             deleted_at: null
           }).lean();
@@ -136,21 +152,43 @@ class AutomationEngine {
       const triggers = await automationCache.getUserActiveFlows(userId);
       console.log(`Found ${triggers.length} triggers for user ${userId}`);
 
+      const incomingWorkspaceId = eventData.workspaceId ? eventData.workspaceId.toString() : null;
+      console.log(`Incoming workspaceId: ${incomingWorkspaceId}`);
 
-      const messageTriggers = triggers.filter((t, i, arr) => t.event_type === 'message_received' && arr.findIndex(tt => String(tt.flow_id) === String(t.flow_id) && tt.event_type === 'message_received') === i);
-      console.log(`Found ${messageTriggers.length} message received triggers`);
+      const workspaceTriggers = triggers.filter(t => {
+        const triggerWorkspaceId = t.workspace_id ? t.workspace_id.toString() : null;
+        return !triggerWorkspaceId || !incomingWorkspaceId || triggerWorkspaceId === incomingWorkspaceId;
+      });
 
-      const waitingExecution = await AutomationExecution.findOne({
+      const messageTriggers = workspaceTriggers.filter((t, i, arr) => t.event_type === 'message_received' && arr.findIndex(tt => String(tt.flow_id) === String(t.flow_id) && tt.event_type === 'message_received') === i);
+      console.log(`Found ${messageTriggers.length} message received triggers for workspace`);
+
+      const waitingQuery = {
         contact_identifier: senderNumber,
         status: 'waiting',
         user_id: userId
-      }).sort({ updated_at: -1 });
+      };
+      if (incomingWorkspaceId) {
+        waitingQuery.workspace_id = incomingWorkspaceId;
+      }
+
+      const waitingExecution = await AutomationExecution.findOne(waitingQuery).sort({ updated_at: -1 });
+
+      let incomingPlatform = eventData.platform || 'whatsapp';
+      if (['baileys', 'business_api', 'cloud_api'].includes(incomingPlatform)) {
+        incomingPlatform = 'whatsapp';
+      }
 
       if (waitingExecution) {
         console.log(`Found waiting execution ${waitingExecution._id} for ${senderNumber}. Resuming...`);
         const flow = await AutomationFlow.findById(waitingExecution.flow_id).populate('user_id');
         if (flow) {
-          return await this.resumeExecution(flow, waitingExecution, eventData, normalizedMessagePayload);
+          const flowPlatform = flow.platform || 'whatsapp';
+          if (flowPlatform === 'all' || flowPlatform === incomingPlatform) {
+            return await this.resumeExecution(flow, waitingExecution, eventData, normalizedMessagePayload);
+          } else {
+            console.log(`Skipping waiting execution flow ${flow.name} because platform ${flowPlatform} does not match incoming ${incomingPlatform}`);
+          }
         }
       }
 
@@ -166,6 +204,12 @@ class AutomationEngine {
         }
 
         if (flow && flow.is_active && !flow.deleted_at) {
+          const flowPlatform = flow.platform || 'whatsapp';
+          if (flowPlatform !== 'all' && flowPlatform !== incomingPlatform) {
+            console.log(`Skipping flow ${flow.name} (${flowPlatform}) for incoming message on platform ${incomingPlatform}`);
+            continue;
+          }
+
           console.log(`Checking conditions for flow:`, flow.name);
           const shouldExecute = this.checkMessageTriggerConditions(flow, message, senderNumber, recipientNumber, messageType, null, eventData, normalizedMessagePayload);
           console.log(`Should execute flow: ${shouldExecute}`);
@@ -174,6 +218,7 @@ class AutomationEngine {
             await this.executeFlow(flow, {
               event_type: 'message_received',
               message,
+              interactive_id,
               messagePayload: normalizedMessagePayload,
               senderNumber,
               recipientNumber,
@@ -205,6 +250,7 @@ class AutomationEngine {
 
     const dataObject = {
       message: message || messageId,
+      interactive_id: eventData?.interactive_id || null,
       messagePayload: messagePayload || this.normalizeMessagePayload(message || messageId),
       senderNumber,
       recipientNumber,
@@ -255,6 +301,7 @@ class AutomationEngine {
       const execution = await AutomationExecution.create({
         flow_id: flow._id,
         user_id: flow.user_id._id || flow.user_id,
+        workspace_id: flow.workspace_id || null,
         status: 'running',
         input_data: inputData
       });
@@ -307,23 +354,23 @@ class AutomationEngine {
     const startNodes = this.getStartNodes(flow);
     for (const node of startNodes) {
 
-        const nodeResult = await this.executeNode(node, flow, currentData, executionLog);
-        if (nodeResult.status === 'waiting') {
-          return { success: true, status: 'waiting', output: currentData, executionLog };
-        }
-        if (nodeResult.success) {
-          currentData = {
-            ...currentData,
-            ...nodeResult.output,
-            userId: currentData.userId || inputData.userId || inputData.user_id
-          };
+      const nodeResult = await this.executeNode(node, flow, currentData, executionLog);
+      if (nodeResult.status === 'waiting') {
+        return { success: true, status: 'waiting', output: currentData, executionLog };
+      }
+      if (nodeResult.success) {
+        currentData = {
+          ...currentData,
+          ...nodeResult.output,
+          userId: currentData.userId || inputData.userId || inputData.user_id
+        };
 
-          const workflowResult = await this.processConnectedNodes(flow, node, currentData, executionLog, inputData);
-          if (workflowResult && workflowResult.status === 'waiting') {
-            return workflowResult;
-          }
+        const workflowResult = await this.processConnectedNodes(flow, node, currentData, executionLog, inputData);
+        if (workflowResult && workflowResult.status === 'waiting') {
+          return workflowResult;
         }
       }
+    }
 
     const executionTime = Date.now() - startTime;
 
@@ -396,7 +443,7 @@ class AutomationEngine {
 
     try {
       console.log(`\x1b[36m[Flow Engine]\x1b[0m >>> Executing Node: "${node.name || node.id}" (Type: ${node.type})`);
-      
+
       const nodeLog = {
         node_id: node.id,
         node_type: node.type,
@@ -439,6 +486,15 @@ class AutomationEngine {
         case 'add_tag':
           result = await this.executeAddTagNode(node, inputData);
           break;
+        case 'remove_tag':
+          result = await this.executeRemoveTagNode(node, inputData);
+          break;
+        case 'assign_agent':
+          result = await this.executeAssignAgentNode(node, inputData);
+          break;
+        case 'assign_random_agent':
+          result = await this.executeAssignRandomAgentNode(node, inputData);
+          break;
         case 'cta_button':
           result = await this.executeSendCtaNode(node, inputData);
           break;
@@ -467,11 +523,11 @@ class AutomationEngine {
           result = await this.executeFormFlowNode(node, inputData);
           break;
         case 'response_saver':
-        result = await this.executeResponseSaverNode(node, inputData);
-        break;
-      case 'api':
-        result = await this.executeApiNode(node, inputData);
-        break;
+          result = await this.executeResponseSaverNode(node, inputData);
+          break;
+        case 'api':
+          result = await this.executeApiNode(node, inputData);
+          break;
         case 'custom':
           result = await this.executeCustomNode(node, inputData);
           break;
@@ -485,7 +541,7 @@ class AutomationEngine {
       nodeLog.error = result.error || null;
 
       executionLog.push(nodeLog);
-      
+
       if (result.success) {
         console.log(`\x1b[32m[Flow Engine]\x1b[0m Node "${node.name || node.id}" \x1b[32mSUCCESS\x1b[0m. Output keys: ${Object.keys(result.output || {})}`);
       } else {
@@ -577,20 +633,45 @@ class AutomationEngine {
       return false;
     }
 
-    const fieldValue = this.getNestedValue(data, field);
+    const fieldValue = (field === 'message' && typeof data.interactive_id === 'string' && data.interactive_id)
+      ? data.interactive_id
+      : this.getNestedValue(data, field);
 
     const strField = String(fieldValue ?? '').toLowerCase();
     const strValue = String(value ?? '').toLowerCase();
 
+    const getSuffix = (valStr) => {
+      if (typeof valStr === 'string' && valStr.includes('___')) {
+        return valStr.split('___').slice(1).join('___').toLowerCase();
+      }
+      return valStr.toLowerCase();
+    };
+
     switch (operator) {
-      case 'equals':
-        return fieldValue == value;
-      case 'not_equals':
-        return fieldValue != value;
-      case 'contains':
+      case 'equals': {
+        if (strField.includes('___') || strValue.includes('___')) {
+          return getSuffix(strField) === getSuffix(strValue);
+        }
+        return strField === strValue;
+      }
+      case 'not_equals': {
+        if (strField.includes('___') || strValue.includes('___')) {
+          return getSuffix(strField) !== getSuffix(strValue);
+        }
+        return strField !== strValue;
+      }
+      case 'contains': {
+        if (strField.includes('___') || strValue.includes('___')) {
+          return getSuffix(strField).includes(getSuffix(strValue));
+        }
         return strField.includes(strValue);
-      case 'not_contains':
+      }
+      case 'not_contains': {
+        if (strField.includes('___') || strValue.includes('___')) {
+          return !getSuffix(strField).includes(getSuffix(strValue));
+        }
         return !strField.includes(strValue);
+      }
       case 'starts_with':
         return strField.startsWith(strValue);
       case 'ends_with':
@@ -611,7 +692,13 @@ class AutomationEngine {
         if (!Array.isArray(value)) {
           return false;
         }
-        return value.some(v => strField.includes(String(v).toLowerCase()));
+        return value.some(v => {
+          const itemStr = String(v ?? '').toLowerCase();
+          if (strField.includes('___') || itemStr.includes('___')) {
+            return getSuffix(strField) === getSuffix(itemStr);
+          }
+          return strField.includes(itemStr);
+        });
       default:
         return true;
     }
@@ -842,7 +929,7 @@ class AutomationEngine {
 
       const { Form } = await import('../models/index.js');
       const form = await Form.findOne({ _id: form_id, user_id: userId, deleted_at: null });
-      
+
       if (!form || !form.flow?.flow_id) {
         return { success: false, output: inputData, error: 'Form not found or has no published Meta Flow' };
       }
@@ -857,6 +944,206 @@ class AutomationEngine {
         buttonText: processedButton,
         providerType: provider_type || PROVIDER_TYPES.BUSINESS_API
       };
+
+      let contactDoc = null;
+      const contactId = inputData.contactId || inputData.contact?._id;
+      if (contactId) {
+        contactDoc = await Contact.findOne({ _id: contactId, created_by: userId, deleted_at: null }).lean();
+      } else {
+        contactDoc = await Contact.findOne({
+          $or: [
+            { phone_number: processedRecipient },
+            { telegram_chat_id: processedRecipient }
+          ],
+          created_by: userId,
+          deleted_at: null
+        }).lean();
+      }
+
+      if (contactDoc && contactDoc.source === 'telegram') {
+        const { default: TelegramConnection } = await import('../models/telegram-connection.model.js');
+        const bot = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+        if (!bot) {
+          throw new Error('No active Telegram bot found for user');
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+        const result = await omnichannelService.sendMessage({
+          platform: 'telegram',
+          workspace_id: bot.workspace_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          message_type: 'text',
+          text: `${processedBody}\n\n(Note: Forms/Flows are only supported on WhatsApp)`
+        });
+
+        const telegramMsgId = result?.message_id?.toString() || `tg_${Date.now()}`;
+
+        const newMessage = await Message.create({
+          workspace_id: bot.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: 'telegram',
+          provider: 'telegram',
+          sender_id: bot.bot_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          direction: 'outbound',
+          message_type: 'text',
+          content: `${processedBody} (WhatsApp Flow)`,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: bot.bot_id,
+              name: bot.bot_id
+            },
+            recipient: {
+              id: contactDoc.telegram_chat_id,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: 'telegram',
+            provider: 'telegram'
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return {
+          success: true,
+          output: {
+            ...inputData,
+            form_sent: true,
+            sent_to: contactDoc.telegram_chat_id,
+            message_id: telegramMsgId
+          }
+        };
+      } else if (contactDoc && (contactDoc.source === 'facebook' || contactDoc.source === 'instagram')) {
+        const platform = contactDoc.source;
+        let connection = null;
+        if (platform === 'facebook') {
+          const { default: FacebookConnection } = await import('../models/facebook-connection.model.js');
+          connection = await FacebookConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+          }
+        } else {
+          const { default: InstagramConnection } = await import('../models/instagram-connection.model.js');
+          connection = await InstagramConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+          }
+        }
+
+        if (!connection) {
+          throw new Error(`No active ${platform} connection found for user`);
+        }
+
+        let pageId = null;
+        const lastMsg = await Message.findOne({ contact_id: contactDoc._id }).sort({ wa_timestamp: -1 }).lean();
+        if (lastMsg) {
+          pageId = lastMsg.direction === 'inbound' ? lastMsg.recipient_id : lastMsg.sender_id;
+        }
+
+        if (platform === 'facebook') {
+          if (!pageId) {
+            const page = connection.pages?.find(p => p.is_active !== false);
+            pageId = page?.page_id;
+          }
+          if (!pageId) throw new Error(`No active Facebook Page found for this connection`);
+        } else {
+          if (!pageId) {
+            pageId = connection.ig_user_id || (connection.pages && connection.pages[0]?.instagram_account_id);
+          }
+          if (!pageId) throw new Error(`No active Instagram Account found for this connection`);
+        }
+
+        const recipientId = platform === 'facebook' ? contactDoc.facebook_page_scoped_id : contactDoc.instagram_scoped_id;
+        if (!recipientId) {
+          throw new Error(`Recipient scoped ID not found for contact`);
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+        const result = await omnichannelService.sendMessage({
+          platform,
+          workspace_id: connection.workspace_id,
+          page_id: pageId,
+          recipient_id: recipientId,
+          message_type: 'text',
+          text: `${processedBody}\n\n(Note: Interactive Forms are only supported on WhatsApp)`
+        });
+
+        const fbIgMsgId = result?.message_id?.toString() || `fbig_${Date.now()}`;
+
+        const newMessage = await Message.create({
+          workspace_id: connection.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: platform,
+          provider: platform,
+          sender_id: pageId,
+          recipient_id: recipientId,
+          direction: 'outbound',
+          message_type: 'text',
+          content: `${processedBody} (WhatsApp Flow)`,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: pageId,
+              name: pageId
+            },
+            recipient: {
+              id: recipientId,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: platform,
+            provider: platform
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return {
+          success: true,
+          output: {
+            ...inputData,
+            form_sent: true,
+            sent_to: recipientId,
+            message_id: fbIgMsgId
+          }
+        };
+      }
 
       if (inputData.whatsappPhoneNumberId) {
         const whatsappPhoneNumber = await WhatsappPhoneNumber.findById(inputData.whatsappPhoneNumberId)
@@ -913,6 +1200,7 @@ class AutomationEngine {
       message_body,
       message_template,
       media_url,
+      mediaUrl,
       buttons,
       interactive_type,
       button_params,
@@ -921,6 +1209,8 @@ class AutomationEngine {
       messageType,
       location_params
     } = node.parameters || {};
+
+    const activeMediaUrl = media_url || mediaUrl;
 
     if (!recipient) {
       console.error('[Send Message Node] Error: Recipient is missing');
@@ -944,7 +1234,6 @@ class AutomationEngine {
         providerType: provider_type || PROVIDER_TYPES.BUSINESS_API
       };
 
-      // Calculate flow prefix to match frontend trigger generation
       const flowIdStr = inputData.flow_id?.toString() || '';
       const flowPrefix = flowIdStr ? `f${flowIdStr.slice(-6)}` : '';
 
@@ -963,13 +1252,15 @@ class AutomationEngine {
           messageParams.messageText = processedMessage;
         }
       }
-      if (media_url) {
-        messageParams.mediaUrl = media_url;
+      if (activeMediaUrl) {
+        const resolvedUrl = businessApiProvider.getPublicMediaUrl(activeMediaUrl);
+
+        messageParams.mediaUrl = resolvedUrl;
         messageParams.file = {
           originalname: 'media',
-          mimetype: this.getMimeTypeFromUrl(media_url),
+          mimetype: this.getMimeTypeFromUrl(resolvedUrl),
           buffer: null,
-          url: media_url
+          url: resolvedUrl
         };
       }
 
@@ -980,7 +1271,7 @@ class AutomationEngine {
         if (interactive_type === 'button' && button_params) {
           messageParams.buttonParams = button_params.map((btn, index) => {
             const rawId = btn.id || `btn_${index + 1}`;
-            const id = flowPrefix ? `${flowPrefix}___${rawId}` : rawId;
+            const id = (flowPrefix && !rawId.startsWith(`${flowPrefix}___`)) ? `${flowPrefix}___${rawId}` : rawId;
             return {
               title: this.processTemplateString(btn.title, inputData),
               id: id
@@ -995,7 +1286,7 @@ class AutomationEngine {
             sectionTitle: this.processTemplateString(list_params.sectionTitle || 'Options', inputData),
             items: (list_params.items || []).map((item, index) => {
               const rawId = item.id || item.title || `item_${index + 1}`;
-              const id = flowPrefix ? `${flowPrefix}___${rawId}` : rawId;
+              const id = (flowPrefix && !rawId.startsWith(`${flowPrefix}___`)) ? `${flowPrefix}___${rawId}` : rawId;
               return {
                 title: this.processTemplateString(item.title, inputData),
                 description: this.processTemplateString(item.description || '', inputData),
@@ -1010,7 +1301,7 @@ class AutomationEngine {
         messageParams.interactiveType = 'button';
         messageParams.buttonParams = buttons.map((btn, index) => {
           const rawId = btn.value || btn.id || `btn_${index + 1}`;
-          const id = flowPrefix ? `${flowPrefix}___${rawId}` : rawId;
+          const id = (flowPrefix && !rawId.startsWith(`${flowPrefix}___`)) ? `${flowPrefix}___${rawId}` : rawId;
           return {
             id: id,
             title: this.processTemplateString(btn.text || btn.title || '', inputData)
@@ -1028,6 +1319,288 @@ class AutomationEngine {
         }
       }
 
+
+      let contactDoc = null;
+      const contactId = inputData.contactId || inputData.contact?._id;
+      if (contactId) {
+        contactDoc = await Contact.findOne({ _id: contactId, created_by: userId, deleted_at: null }).lean();
+      } else {
+        contactDoc = await Contact.findOne({
+          $or: [
+            { phone_number: processedRecipient },
+            { telegram_chat_id: processedRecipient },
+            { facebook_page_scoped_id: processedRecipient },
+            { instagram_scoped_id: processedRecipient }
+          ],
+          created_by: userId,
+          deleted_at: null
+        }).lean();
+      }
+
+      if (contactDoc && contactDoc.source === 'telegram') {
+        const { default: TelegramConnection } = await import('../models/telegram-connection.model.js');
+        const bot = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+        if (!bot) {
+          throw new Error('No active Telegram bot found for user');
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+
+        let msgType = messageParams.messageType || 'text';
+        let textToSend = messageParams.messageText;
+
+        let buttonsToPass = messageParams.buttonParams || messageParams.buttons;
+        if (msgType === 'interactive' && messageParams.interactiveType === 'list' && messageParams.listParams) {
+          const listItems = messageParams.listParams.items || [];
+          buttonsToPass = listItems.map(item => ({
+            id: item.id || item.title,
+            text: item.title
+          }));
+          if (!textToSend) {
+            textToSend = messageParams.listParams.body || messageParams.listParams.header || "Please select an option:";
+          }
+          msgType = 'interactive';
+        }
+
+        const result = await omnichannelService.sendMessage({
+          platform: 'telegram',
+          workspace_id: bot.workspace_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          message_type: msgType,
+          text: textToSend,
+          file_url: messageParams.mediaUrl,
+          buttons: buttonsToPass,
+          latitude: messageParams.locationParams?.latitude,
+          longitude: messageParams.locationParams?.longitude,
+          name: messageParams.locationParams?.name,
+          address: messageParams.locationParams?.address
+        });
+
+        const telegramMsgId = result?.message_id?.toString() || `tg_${Date.now()}`;
+
+        const tgInteractiveData = msgType === 'interactive' ? {
+          interactiveType: messageParams.interactiveType,
+          buttons: messageParams.interactiveType === 'button' ? messageParams.buttonParams : undefined,
+          list: messageParams.interactiveType === 'list' ? messageParams.listParams : undefined
+        } : null;
+
+        let tgFileUrl = messageParams.mediaUrl || null;
+        if (tgFileUrl && typeof tgFileUrl === 'string' && tgFileUrl.startsWith('http')) {
+          try { tgFileUrl = new URL(tgFileUrl).pathname.replace(/^\//, ''); } catch (_) { }
+        }
+
+        const newMessage = await Message.create({
+          workspace_id: bot.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: 'telegram',
+          provider: 'telegram',
+          sender_id: bot.bot_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          direction: 'outbound',
+          message_type: msgType,
+          content: msgType === 'location'
+            ? (messageParams.locationParams?.name || messageParams.locationParams?.address || '📍 Location')
+            : (textToSend || messageParams.mediaUrl || 'Media message'),
+          file_url: tgFileUrl,
+          interactive_data: tgInteractiveData,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            interactiveData: newMessage.interactive_data || null,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: bot.bot_id,
+              name: bot.bot_id
+            },
+            recipient: {
+              id: contactDoc.telegram_chat_id,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: 'telegram',
+            provider: 'telegram'
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return {
+          success: true,
+          output: {
+            ...inputData,
+            message_sent: true,
+            sent_to: contactDoc.telegram_chat_id,
+            provider: 'telegram',
+            message_id: telegramMsgId
+          }
+        };
+      } else if (contactDoc && (contactDoc.source === 'facebook' || contactDoc.source === 'instagram')) {
+        const platform = contactDoc.source;
+        let connection = null;
+        if (platform === 'facebook') {
+          const { default: FacebookConnection } = await import('../models/facebook-connection.model.js');
+          connection = await FacebookConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+          }
+        } else {
+          const { default: InstagramConnection } = await import('../models/instagram-connection.model.js');
+          connection = await InstagramConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+          }
+        }
+
+        if (!connection) {
+          throw new Error(`No active ${platform} connection found for user`);
+        }
+
+        let pageId = null;
+        const lastMsg = await Message.findOne({ contact_id: contactDoc._id }).sort({ wa_timestamp: -1 }).lean();
+        if (lastMsg) {
+          pageId = lastMsg.direction === 'inbound' ? lastMsg.recipient_id : lastMsg.sender_id;
+        }
+
+        if (platform === 'facebook') {
+          if (!pageId) {
+            const page = connection.pages?.find(p => p.is_active !== false);
+            pageId = page?.page_id;
+          }
+          if (!pageId) throw new Error(`No active Facebook Page found for this connection`);
+        } else {
+          if (!pageId) {
+            pageId = connection.ig_user_id || (connection.pages && connection.pages[0]?.instagram_account_id);
+          }
+          if (!pageId) throw new Error(`No active Instagram Account found for this connection`);
+        }
+
+        const recipientId = platform === 'facebook' ? contactDoc.facebook_page_scoped_id : contactDoc.instagram_scoped_id;
+        if (!recipientId) {
+          throw new Error(`Recipient scoped ID not found for contact`);
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+
+        let msgType = messageParams.messageType || 'text';
+        let textToSend = messageParams.messageText;
+
+        let buttonsToPass = messageParams.buttonParams || messageParams.buttons;
+        if (msgType === 'interactive' && messageParams.interactiveType === 'list' && messageParams.listParams) {
+          const listItems = messageParams.listParams.items || [];
+          buttonsToPass = listItems.map(item => ({
+            id: item.id || item.title,
+            text: item.title
+          }));
+          if (!textToSend) {
+            textToSend = messageParams.listParams.body || messageParams.listParams.header || "Please select an option:";
+          }
+          msgType = 'interactive';
+        }
+
+        const result = await omnichannelService.sendMessage({
+          platform,
+          workspace_id: connection.workspace_id,
+          page_id: pageId,
+          recipient_id: recipientId,
+          message_type: msgType,
+          text: textToSend,
+          file_url: messageParams.mediaUrl,
+          buttons: buttonsToPass,
+          latitude: messageParams.locationParams?.latitude,
+          longitude: messageParams.locationParams?.longitude,
+          name: messageParams.locationParams?.name,
+          address: messageParams.locationParams?.address
+        });
+
+        const fbIgMsgId = result?.message_id?.toString() || `fbig_${Date.now()}`;
+
+        const fbIgInteractiveData = msgType === 'interactive' ? {
+          interactiveType: messageParams.interactiveType,
+          buttons: messageParams.interactiveType === 'button' ? messageParams.buttonParams : undefined,
+          list: messageParams.interactiveType === 'list' ? messageParams.listParams : undefined
+        } : null;
+
+        let fbIgFileUrl = messageParams.mediaUrl || null;
+        if (fbIgFileUrl && typeof fbIgFileUrl === 'string' && fbIgFileUrl.startsWith('http')) {
+          try { fbIgFileUrl = new URL(fbIgFileUrl).pathname.replace(/^\//, ''); } catch (_) { }
+        }
+
+        const newMessage = await Message.create({
+          workspace_id: connection.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: platform,
+          provider: platform,
+          sender_id: pageId,
+          recipient_id: recipientId,
+          direction: 'outbound',
+          message_type: msgType,
+          content: msgType === 'location'
+            ? (messageParams.locationParams?.name || messageParams.locationParams?.address || '📍 Location')
+            : (textToSend || messageParams.mediaUrl || 'Media message'),
+          file_url: fbIgFileUrl,
+          interactive_data: fbIgInteractiveData,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            interactiveData: newMessage.interactive_data || null,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: pageId,
+              name: pageId
+            },
+            recipient: {
+              id: recipientId,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: platform,
+            provider: platform
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return {
+          success: true,
+          output: {
+            ...inputData,
+            message_sent: true,
+            sent_to: recipientId,
+            provider: platform,
+            message_id: fbIgMsgId
+          }
+        };
+      }
 
       if (inputData.whatsappPhoneNumberId) {
         const whatsappPhoneNumber = await WhatsappPhoneNumber.findById(inputData.whatsappPhoneNumberId)
@@ -1145,22 +1718,22 @@ class AutomationEngine {
           ...card,
           header: card.header
             ? {
-                ...card.header,
-                link: card.header.link
-                  ? this.processTemplateString(card.header.link, inputData)
-                  : undefined
-              }
+              ...card.header,
+              link: card.header.link
+                ? this.processTemplateString(card.header.link, inputData)
+                : undefined
+            }
             : undefined,
           buttons: Array.isArray(card.buttons)
             ? card.buttons.map(btn => ({
-                ...btn,
-                url_value: btn.url_value
-                  ? this.processTemplateString(btn.url_value, inputData)
-                  : undefined,
-                payload: btn.payload
-                  ? this.processTemplateString(btn.payload, inputData)
-                  : undefined
-              }))
+              ...btn,
+              url_value: btn.url_value
+                ? this.processTemplateString(btn.url_value, inputData)
+                : undefined,
+              payload: btn.payload
+                ? this.processTemplateString(btn.payload, inputData)
+                : undefined
+            }))
             : []
         }));
       }
@@ -1210,6 +1783,330 @@ class AutomationEngine {
       if (url_button_value) {
         if (!messageParams.templateVariables) messageParams.templateVariables = {};
         messageParams.templateVariables.url = this.processTemplateString(url_button_value, inputData);
+      }
+
+      let contactDoc = null;
+      const contactId = inputData.contactId || inputData.contact?._id;
+      if (contactId) {
+        contactDoc = await Contact.findOne({ _id: contactId, created_by: userId, deleted_at: null }).lean();
+      } else {
+        contactDoc = await Contact.findOne({
+          $or: [
+            { phone_number: processedRecipient },
+            { telegram_chat_id: processedRecipient },
+            { facebook_page_scoped_id: processedRecipient },
+            { instagram_scoped_id: processedRecipient }
+          ],
+          created_by: userId,
+          deleted_at: null
+        }).lean();
+      }
+
+      if (contactDoc && contactDoc.source === 'telegram') {
+        const { default: TelegramConnection } = await import('../models/telegram-connection.model.js');
+        const bot = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+        if (!bot) {
+          throw new Error('No active Telegram bot found for user');
+        }
+
+        let bodyText = template.message_body || '';
+        for (const [key, val] of Object.entries(resolvedBodyVars)) {
+          bodyText = bodyText.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), val);
+        }
+
+        let telegramText = '';
+        if (template.header && template.header.format === 'text' && template.header.text) {
+          telegramText += template.header.text + '\n\n';
+        }
+        telegramText += bodyText;
+        if (template.footer_text) {
+          telegramText += '\n\n' + template.footer_text;
+        }
+
+        const resolvedCoupon = coupon_code ? this.processTemplateString(coupon_code, inputData) : null;
+        if (resolvedCoupon) {
+          telegramText += `\n\nCoupon Code: ${resolvedCoupon}`;
+        }
+
+        let buttonsToPass = [];
+        if (Array.isArray(template.buttons)) {
+          buttonsToPass = template.buttons.map((btn, index) => {
+            if (btn.type === 'url' || btn.type === 'website') {
+              let btnUrl = btn.url || btn.website_url || '';
+              if (url_button_value) {
+                btnUrl = this.processTemplateString(url_button_value, inputData);
+              }
+              return {
+                text: btn.text,
+                url: btnUrl,
+                type: 'url'
+              };
+            }
+            return {
+              text: btn.text,
+              id: btn.value || btn.id || `btn_${index + 1}`
+            };
+          });
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+
+        let msgType = 'text';
+        let mediaUrlToSend = resolvedHeaderMediaUrl;
+        if (!mediaUrlToSend && template.header && template.header.format === 'media' && template.header.media_url) {
+          mediaUrlToSend = template.header.media_url;
+        }
+
+        if (mediaUrlToSend) {
+          const extension = mediaUrlToSend.split('.').pop().toLowerCase().split('?')[0];
+          if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) msgType = 'image';
+          else if (['mp4', 'mov', 'avi', 'mkv'].includes(extension)) msgType = 'video';
+          else if (['mp3', 'ogg', 'wav', 'm4a'].includes(extension)) msgType = 'audio';
+          else msgType = 'document';
+        }
+
+        const result = await omnichannelService.sendMessage({
+          platform: 'telegram',
+          workspace_id: bot.workspace_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          message_type: msgType,
+          text: telegramText,
+          file_url: mediaUrlToSend,
+          buttons: buttonsToPass
+        });
+
+        const telegramMsgId = result?.message_id?.toString() || `tg_${Date.now()}`;
+
+        const newMessage = await Message.create({
+          workspace_id: bot.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: 'telegram',
+          provider: 'telegram',
+          sender_id: bot.bot_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          direction: 'outbound',
+          message_type: msgType,
+          content: telegramText || mediaUrlToSend || 'Template message',
+          file_url: mediaUrlToSend,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: bot.bot_id,
+              name: bot.bot_id
+            },
+            recipient: {
+              id: contactDoc.telegram_chat_id,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: 'telegram',
+            provider: 'telegram'
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return {
+          success: true,
+          output: {
+            ...inputData,
+            template_sent: true,
+            template_name: template.template_name,
+            template_type: template.template_type,
+            sent_to: contactDoc.telegram_chat_id,
+            provider: 'telegram',
+            message_id: telegramMsgId
+          }
+        };
+      } else if (contactDoc && (contactDoc.source === 'facebook' || contactDoc.source === 'instagram')) {
+        const platform = contactDoc.source;
+        let connection = null;
+        if (platform === 'facebook') {
+          const { default: FacebookConnection } = await import('../models/facebook-connection.model.js');
+          connection = await FacebookConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+          }
+        } else {
+          const { default: InstagramConnection } = await import('../models/instagram-connection.model.js');
+          connection = await InstagramConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+          }
+        }
+
+        if (!connection) {
+          throw new Error(`No active ${platform} connection found for user`);
+        }
+
+        let pageId = null;
+        const lastMsg = await Message.findOne({ contact_id: contactDoc._id }).sort({ wa_timestamp: -1 }).lean();
+        if (lastMsg) {
+          pageId = lastMsg.direction === 'inbound' ? lastMsg.recipient_id : lastMsg.sender_id;
+        }
+
+        if (platform === 'facebook') {
+          if (!pageId) {
+            const page = connection.pages?.find(p => p.is_active !== false);
+            pageId = page?.page_id;
+          }
+          if (!pageId) throw new Error(`No active Facebook Page found for this connection`);
+        } else {
+          if (!pageId) {
+            pageId = connection.ig_user_id || (connection.pages && connection.pages[0]?.instagram_account_id);
+          }
+          if (!pageId) throw new Error(`No active Instagram Account found for this connection`);
+        }
+
+        const recipientId = platform === 'facebook' ? contactDoc.facebook_page_scoped_id : contactDoc.instagram_scoped_id;
+        if (!recipientId) {
+          throw new Error(`Recipient scoped ID not found for contact`);
+        }
+
+        let bodyText = template.message_body || '';
+        for (const [key, val] of Object.entries(resolvedBodyVars)) {
+          bodyText = bodyText.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), val);
+        }
+
+        let fbIgText = '';
+        if (template.header && template.header.format === 'text' && template.header.text) {
+          fbIgText += template.header.text + '\n\n';
+        }
+        fbIgText += bodyText;
+        if (template.footer_text) {
+          fbIgText += '\n\n' + template.footer_text;
+        }
+
+        const resolvedCoupon = coupon_code ? this.processTemplateString(coupon_code, inputData) : null;
+        if (resolvedCoupon) {
+          fbIgText += `\n\nCoupon Code: ${resolvedCoupon}`;
+        }
+
+        let buttonsToPass = [];
+        if (Array.isArray(template.buttons)) {
+          buttonsToPass = template.buttons.map((btn, index) => {
+            if (btn.type === 'url' || btn.type === 'website') {
+              let btnUrl = btn.url || btn.website_url || '';
+              if (url_button_value) {
+                btnUrl = this.processTemplateString(url_button_value, inputData);
+              }
+              return {
+                text: btn.text,
+                url: btnUrl,
+                type: 'url'
+              };
+            }
+            return {
+              text: btn.text,
+              id: btn.value || btn.id || `btn_${index + 1}`
+            };
+          });
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+
+        let msgType = 'text';
+        let mediaUrlToSend = resolvedHeaderMediaUrl;
+        if (!mediaUrlToSend && template.header && template.header.format === 'media' && template.header.media_url) {
+          mediaUrlToSend = template.header.media_url;
+        }
+
+        if (mediaUrlToSend) {
+          const extension = mediaUrlToSend.split('.').pop().toLowerCase().split('?')[0];
+          if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) msgType = 'image';
+          else if (['mp4', 'mov', 'avi', 'mkv'].includes(extension)) msgType = 'video';
+          else if (['mp3', 'ogg', 'wav', 'm4a'].includes(extension)) msgType = 'audio';
+          else msgType = 'document';
+        }
+
+        const result = await omnichannelService.sendMessage({
+          platform,
+          workspace_id: connection.workspace_id,
+          page_id: pageId,
+          recipient_id: recipientId,
+          message_type: msgType,
+          text: fbIgText,
+          file_url: mediaUrlToSend,
+          buttons: buttonsToPass
+        });
+
+        const fbIgMsgId = result?.message_id?.toString() || `fbig_${Date.now()}`;
+
+        const newMessage = await Message.create({
+          workspace_id: connection.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: platform,
+          provider: platform,
+          sender_id: pageId,
+          recipient_id: recipientId,
+          direction: 'outbound',
+          message_type: msgType,
+          content: fbIgText || mediaUrlToSend || 'Template message',
+          file_url: mediaUrlToSend,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: pageId,
+              name: pageId
+            },
+            recipient: {
+              id: recipientId,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: platform,
+            provider: platform
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return {
+          success: true,
+          output: {
+            ...inputData,
+            template_sent: true,
+            template_name: template.template_name,
+            template_type: template.template_type,
+            sent_to: recipientId,
+            provider: platform,
+            message_id: fbIgMsgId
+          }
+        };
       }
 
       if (inputData.whatsappPhoneNumberId) {
@@ -1666,8 +2563,8 @@ class AutomationEngine {
     const nodeResult = await this.executeNode(nextNode, flow, currentData, executionLog);
 
     if (nodeResult.status === 'waiting') {
-       this.runningExecutions.delete(executionId);
-       return { success: true };
+      this.runningExecutions.delete(executionId);
+      return { success: true };
     }
 
     if (nodeResult.success) {
@@ -1776,6 +2673,159 @@ class AutomationEngine {
     }
   }
 
+  async executeRemoveTagNode(node, inputData) {
+    const { tag_ids } = node.parameters || {};
+    const contactId = inputData.contactId;
+
+    if (!contactId) {
+      return { success: false, output: inputData, error: 'contactId is required' };
+    }
+
+    try {
+      let tagsToRemove = [];
+
+      if (tag_ids && Array.isArray(tag_ids) && tag_ids.length > 0) {
+        tagsToRemove = await Tag.find({ _id: { $in: tag_ids } });
+      }
+
+      if (tagsToRemove.length === 0) {
+        return { success: true, output: inputData };
+      }
+
+      const tagIdsToRemove = tagsToRemove.map(t => t._id);
+      const tagLabelsRemoved = tagsToRemove.map(t => t.label);
+
+      await Contact.findByIdAndUpdate(contactId, {
+        $pull: { tags: { $in: tagIdsToRemove } }
+      });
+
+      await ContactTag.updateMany(
+        { contact_id: contactId, tag_id: { $in: tagIdsToRemove } },
+        { deleted_at: new Date() }
+      );
+
+      console.log(`[remove_tag] Removed tags "${tagLabelsRemoved.join(', ')}" from contact ${contactId}`);
+      return { success: true, output: { ...inputData, last_tags_removed: tagLabelsRemoved } };
+    } catch (error) {
+      console.error(`[remove_tag] Error:`, error);
+      return { success: false, output: inputData, error: error.message };
+    }
+  }
+
+  async executeAssignAgentNode(node, inputData) {
+    const { agent_id } = node.parameters || {};
+    const senderNumber = inputData.senderNumber;
+    const recipientNumber = inputData.recipientNumber;
+    const whatsappPhoneNumberId = inputData.whatsappPhoneNumberId;
+    const userId = inputData.userId || inputData.user_id;
+
+    if (!agent_id) {
+      return { success: false, output: inputData, error: 'agent_id is required' };
+    }
+
+    try {
+      await ChatAssignment.findOneAndUpdate(
+        {
+          sender_number: senderNumber,
+          receiver_number: recipientNumber,
+          whatsapp_phone_number_id: whatsappPhoneNumberId
+        },
+        {
+          agent_id,
+          assigned_by: userId,
+          status: 'assigned',
+          is_solved: false
+        },
+        { upsert: true, returnDocument: 'after' }
+      );
+
+      console.log(`[assign_agent] Assigned human agent ${agent_id} to ${senderNumber}`);
+      return { success: true, output: { ...inputData, agent_assigned_id: agent_id } };
+    } catch (error) {
+      console.error(`[assign_agent] Error:`, error);
+      return { success: false, output: inputData, error: error.message };
+    }
+  }
+
+  async executeAssignRandomAgentNode(node, inputData) {
+    const { team_id } = node.parameters || {};
+    const senderNumber = inputData.senderNumber;
+    const recipientNumber = inputData.recipientNumber;
+    const whatsappPhoneNumberId = inputData.whatsappPhoneNumberId;
+    const userId = inputData.userId || inputData.user_id;
+
+    try {
+      const { User, Team } = await import('../models/index.js');
+      let potentialAgents = [];
+      let lastAgentId = null;
+      let trackerUpdated = false;
+
+      if (team_id) {
+        const teamDoc = await Team.findById(team_id);
+        if (teamDoc) {
+          lastAgentId = teamDoc.round_robin_last_agent_id;
+          potentialAgents = await User.find({ team_id: team_id, status: true, deleted_at: null })
+            .sort({ created_at: 1 })
+            .lean();
+        }
+      } else {
+        const ownerDoc = await User.findById(userId);
+        if (ownerDoc) {
+          lastAgentId = ownerDoc.round_robin_last_agent_id;
+          potentialAgents = await User.find({ created_by: userId, status: true, deleted_at: null })
+            .sort({ created_at: 1 })
+            .lean();
+            
+          if (ownerDoc.status === true && !ownerDoc.deleted_at) {
+            potentialAgents.unshift(ownerDoc); 
+          }
+        }
+      }
+
+      if (!potentialAgents || potentialAgents.length === 0) {
+        return { success: false, output: inputData, error: 'No agents available for round-robin assignment' };
+      }
+
+      let nextIndex = 0;
+      if (lastAgentId) {
+        const lastIndex = potentialAgents.findIndex(a => a._id.toString() === lastAgentId.toString());
+        if (lastIndex !== -1) {
+          nextIndex = (lastIndex + 1) % potentialAgents.length;
+        }
+      }
+
+      const selectedAgent = potentialAgents[nextIndex];
+      const agent_id = selectedAgent._id;
+
+      if (team_id) {
+        await Team.findByIdAndUpdate(team_id, { round_robin_last_agent_id: agent_id });
+      } else {
+        await User.findByIdAndUpdate(userId, { round_robin_last_agent_id: agent_id });
+      }
+
+      await ChatAssignment.findOneAndUpdate(
+        {
+          sender_number: senderNumber,
+          receiver_number: recipientNumber,
+          whatsapp_phone_number_id: whatsappPhoneNumberId
+        },
+        {
+          agent_id,
+          assigned_by: userId,
+          status: 'assigned',
+          is_solved: false
+        },
+        { upsert: true, returnDocument: 'after' }
+      );
+
+      console.log(`[assign_random_agent] Randomly assigned human agent ${agent_id} to ${senderNumber}`);
+      return { success: true, output: { ...inputData, agent_assigned_id: agent_id, team_assigned_id: team_id || null } };
+    } catch (error) {
+      console.error(`[assign_random_agent] Error:`, error);
+      return { success: false, output: inputData, error: error.message };
+    }
+  }
+
   async executeSendCtaNode(node, inputData) {
     const { recipient, text, button_text, url } = node.parameters || {};
     const userId = inputData.userId || inputData.user_id;
@@ -1790,6 +2840,199 @@ class AutomationEngine {
     const processedUrl = this.processTemplateString(url, inputData);
 
     try {
+      let contactDoc = null;
+      const contactId = inputData.contactId || inputData.contact?._id;
+      if (contactId) {
+        contactDoc = await Contact.findOne({ _id: contactId, created_by: userId, deleted_at: null }).lean();
+      } else {
+        contactDoc = await Contact.findOne({
+          $or: [
+            { phone_number: processedRecipient },
+            { telegram_chat_id: processedRecipient },
+            { facebook_page_scoped_id: processedRecipient },
+            { instagram_scoped_id: processedRecipient }
+          ],
+          created_by: userId,
+          deleted_at: null
+        }).lean();
+      }
+
+      if (contactDoc && contactDoc.source === 'telegram') {
+        const { default: TelegramConnection } = await import('../models/telegram-connection.model.js');
+        const bot = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+        if (!bot) {
+          throw new Error('No active Telegram bot found for user');
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+        const result = await omnichannelService.sendMessage({
+          platform: 'telegram',
+          workspace_id: bot.workspace_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          message_type: 'text',
+          text: processedText,
+          buttons: [
+            {
+              text: button_text,
+              url: processedUrl,
+              type: 'url'
+            }
+          ]
+        });
+
+        const telegramMsgId = result?.message_id?.toString() || `tg_${Date.now()}`;
+
+        const newMessage = await Message.create({
+          workspace_id: bot.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: 'telegram',
+          provider: 'telegram',
+          sender_id: bot.bot_id,
+          recipient_id: contactDoc.telegram_chat_id,
+          direction: 'outbound',
+          message_type: 'interactive',
+          content: processedText,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: bot.bot_id,
+              name: bot.bot_id
+            },
+            recipient: {
+              id: contactDoc.telegram_chat_id,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: 'telegram',
+            provider: 'telegram'
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return { success: true, output: inputData };
+      } else if (contactDoc && (contactDoc.source === 'facebook' || contactDoc.source === 'instagram')) {
+        const platform = contactDoc.source;
+        let connection = null;
+        if (platform === 'facebook') {
+          const { default: FacebookConnection } = await import('../models/facebook-connection.model.js');
+          connection = await FacebookConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+          }
+        } else {
+          const { default: InstagramConnection } = await import('../models/instagram-connection.model.js');
+          connection = await InstagramConnection.findOne({ workspace_id: contactDoc.workspace_id || inputData.workspaceId, is_active: true });
+          if (!connection) {
+            connection = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+          }
+        }
+
+        if (!connection) {
+          throw new Error(`No active ${platform} connection found for user`);
+        }
+
+        let pageId = null;
+        const lastMsg = await Message.findOne({ contact_id: contactDoc._id }).sort({ wa_timestamp: -1 }).lean();
+        if (lastMsg) {
+          pageId = lastMsg.direction === 'inbound' ? lastMsg.recipient_id : lastMsg.sender_id;
+        }
+
+        if (platform === 'facebook') {
+          if (!pageId) {
+            const page = connection.pages?.find(p => p.is_active !== false);
+            pageId = page?.page_id;
+          }
+          if (!pageId) throw new Error(`No active Facebook Page found for this connection`);
+        } else {
+          if (!pageId) {
+            pageId = connection.ig_user_id || (connection.pages && connection.pages[0]?.instagram_account_id);
+          }
+          if (!pageId) throw new Error(`No active Instagram Account found for this connection`);
+        }
+
+        const recipientId = platform === 'facebook' ? contactDoc.facebook_page_scoped_id : contactDoc.instagram_scoped_id;
+        if (!recipientId) {
+          throw new Error(`Recipient scoped ID not found for contact`);
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+        const result = await omnichannelService.sendMessage({
+          platform,
+          workspace_id: connection.workspace_id,
+          page_id: pageId,
+          recipient_id: recipientId,
+          message_type: 'text',
+          text: `${processedText}\n\n${button_text}: ${processedUrl}`
+        });
+
+        const fbIgMsgId = result?.message_id?.toString() || `fbig_${Date.now()}`;
+
+        const newMessage = await Message.create({
+          workspace_id: connection.workspace_id,
+          user_id: userId,
+          contact_id: contactDoc._id,
+          platform: platform,
+          provider: platform,
+          sender_id: pageId,
+          recipient_id: recipientId,
+          direction: 'outbound',
+          message_type: 'text',
+          content: `${processedText}\n\n${button_text}: ${processedUrl}`,
+          from_me: true,
+          delivery_status: 'delivered',
+          read_status: 'unread',
+          wa_timestamp: new Date()
+        });
+
+        const ioInstance = unifiedWhatsAppService.io;
+        if (ioInstance) {
+          const formattedMessage = {
+            id: newMessage._id.toString(),
+            content: newMessage.content,
+            messageType: newMessage.message_type,
+            fileUrl: newMessage.file_url || null,
+            createdAt: newMessage.wa_timestamp,
+            can_chat: true,
+            delivered_at: new Date(),
+            delivery_status: newMessage.delivery_status || 'delivered',
+            direction: newMessage.direction || 'outbound',
+            sender: {
+              id: pageId,
+              name: pageId
+            },
+            recipient: {
+              id: recipientId,
+              name: contactDoc.name
+            },
+            user_id: newMessage.user_id?.toString(),
+            contact_id: contactDoc._id.toString(),
+            platform: platform,
+            provider: platform
+          };
+          ioInstance.emit('whatsapp:message', formattedMessage);
+        }
+
+        return { success: true, output: inputData };
+      }
+
       await unifiedWhatsAppService.sendMessage(userId, {
         recipientNumber: processedRecipient,
         whatsappPhoneNumberId,

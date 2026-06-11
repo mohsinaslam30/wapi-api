@@ -17,13 +17,19 @@ const initializeQueueSystem = () => {
   _isInitialized = true;
 
   try {
-    _redisConnection = new IORedis(process.env.REDIS_URL || {
-      host: process.env.REDIS_HOST || '127.0.0.1',
-      port: parseInt(process.env.REDIS_PORT) || 6379,
-      password: process.env.REDIS_PASSWORD || undefined,
+    const redisOptions = {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
-    });
+    };
+
+    _redisConnection = process.env.REDIS_URL
+      ? new IORedis(process.env.REDIS_URL, redisOptions)
+      : new IORedis({
+          host: process.env.REDIS_HOST || '127.0.0.1',
+          port: parseInt(process.env.REDIS_PORT) || 6379,
+          password: process.env.REDIS_PASSWORD || undefined,
+          ...redisOptions,
+        });
 
     _paymentReminderQueue = new Queue('payment-reminder', {
       connection: _redisConnection,

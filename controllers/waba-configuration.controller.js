@@ -84,23 +84,33 @@ export const updateWabaConfiguration = async (req, res) => {
 
 
                 let material;
-                const materialQuery = { _id: materialId, waba_id, deleted_at: null };
+                const materialQuery = { _id: materialId, deleted_at: null };
+                const userId = req.user ? req.user.owner_id : null;
+
+                const baseQuery = userId ? { _id: materialId, user_id: userId, deleted_at: null } : { _id: materialId, deleted_at: null };
 
                 if (materialType === 'ReplyMaterial') {
-                    material = await ReplyMaterial.findOne(materialQuery);
+                    material = await ReplyMaterial.findOne({ ...baseQuery, $or: [{ waba_id }, { waba_id: null }] });
                 } else if (materialType === 'Template') {
-                    material = await Template.findOne({ _id: materialId, waba_id, status: 'approved' });
+                    material = await Template.findOne({ 
+                        _id: materialId, 
+                        $or: [
+                            { waba_id, status: 'approved' }, 
+                            { waba_id: null },
+                            { is_admin_template: true },
+                            { platform: { $ne: 'whatsapp' } }
+                        ] 
+                    });
                 } else if (materialType === 'EcommerceCatalog') {
-                    material = await EcommerceCatalog.findOne(materialQuery);
+                    material = await EcommerceCatalog.findOne({ ...baseQuery, $or: [{ waba_id }, { waba_id: null }] });
                 } else if (materialType === 'chatbot') {
-                    material = await Chatbot.findOne(materialQuery);
+                    material = await Chatbot.findOne(baseQuery);
                 } else if (materialType === 'Sequence') {
-                    material = await Sequence.findOne(materialQuery);
+                    material = await Sequence.findOne({ ...baseQuery, $or: [{ waba_id }, { waba_id: null }, { platform: { $ne: 'whatsapp' } }] });
                 } else if (materialType === 'AppointmentConfig' || materialType === 'appointment_config' || materialType === 'appointment') {
                     material = await AppointmentConfig.findOne({ 
-                        _id: materialId, 
-                        deleted_at: null,
-                        $or: [{ waba_id: waba_id }, { waba_id: config._id }]
+                        ...baseQuery,
+                        $or: [{ waba_id: waba_id }, { waba_id: config._id }, { waba_id: null }]
                     });
                 } else {
                     return res.status(400).json({ success: false, message: `Invalid material type for ${field}` });
@@ -109,7 +119,7 @@ export const updateWabaConfiguration = async (req, res) => {
                 if (!material) {
                     return res.status(400).json({
                         success: false,
-                        message: `Invalid ${materialType} ID for ${field} or it doesn't belong to this WABA account`
+                        message: `Invalid ${materialType} ID for ${field} or it doesn't belong to this account/channel`
                     });
                 }
             }

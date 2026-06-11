@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
 import { generateToken } from '../utils/jwt.js';
-import { User, Session, Setting, OTPLog, Subscription, Plan, Role, RolePermission, Permission, TeamPermission, WhatsappWaba, WhatsappConnection, Contact } from '../models/index.js';
+import { User, Session, Setting, OTPLog, Subscription, Plan, Role, RolePermission, Permission, TeamPermission, WhatsappWaba, WhatsappConnection, Contact, WhatsappPhoneNumber, Template } from '../models/index.js';
 import { sendMail } from '../utils/mail.js';
 import UnifiedWhatsAppService from '../services/whatsapp/unified-whatsapp.service.js';
 import OTPService from '../services/otp.service.js';
@@ -146,6 +146,111 @@ const sendOTPEmail = async (email, otp, userName = 'User') => {
   });
 };
 
+const finalizeUserCreation = async (pendingUser, isSmtpConfigured = true) => {
+  const user = await User.create(pendingUser);
+
+  if (isSmtpConfigured) {
+    try {
+      await EmailTemplateService.send('welcome-message', user.email, {
+        user_name: user.name,
+        user_email: user.email
+      });
+    } catch (e) {
+      console.error('Error sending welcome message:', e);
+    }
+  }
+
+  try {
+    const superAdminRoles = await Role.find({ name: 'super_admin' }).distinct('_id');
+    const allSuperAdmins = await User.find({ role_id: { $in: superAdminRoles }, deleted_at: null });
+
+    for (const admin of allSuperAdmins) {
+      await Contact.create({
+        name: user.name,
+        email: user.email,
+        phone_number: user.phone,
+        user_id: admin._id,
+        created_by: admin._id,
+        source: 'whatsapp',
+        status: 'lead'
+      }).catch(err => {
+        if (err.code !== 11000) console.error('Auto contact create error (signup):', err);
+      });
+    }
+  } catch (syncError) {
+    console.error('Failed to sync new user to admin contacts:', syncError);
+  }
+
+  try {
+    const userWithRole = await User.findById(user._id).populate('role_id');
+    if (userWithRole && userWithRole.role_id && userWithRole.role_id.name === 'user') {
+      const settings = await Setting.findOne().sort({ created_at: -1 });
+      if (settings && settings.free_trial_enabled && settings.free_trial_days > 0) {
+        const trialPlan = await Plan.findOne({
+          billing_cycle: 'free Trial',
+          is_active: true,
+          deleted_at: null
+        });
+
+        if (trialPlan) {
+          const trialEndsAt = new Date();
+          trialEndsAt.setDate(trialEndsAt.getDate() + settings.free_trial_days);
+
+          await Subscription.create({
+            user_id: user._id,
+            plan_id: trialPlan._id,
+            status: 'trial',
+            current_period_start: new Date(),
+            current_period_end: trialEndsAt,
+            trial_ends_at: trialEndsAt,
+            started_at: new Date(),
+            features: trialPlan.features
+          });
+        } else {
+          console.warn('Free trial enabled but no active "free Trial" plan found.');
+        }
+      }
+    }
+  } catch (trialError) {
+    console.error('Failed to assign free trial to new user:', trialError);
+  }
+
+  return user;
+};
+
+const checkIsSmtpConfigured = (settings) => {
+  const smtpHost = (process.env.SMTP_HOST !== undefined ? process.env.SMTP_HOST : (settings?.smtp_host || '')).trim();
+  const smtpUser = (process.env.SMTP_USER !== undefined ? process.env.SMTP_USER : (settings?.smtp_user || '')).trim();
+  const smtpPass = (process.env.SMTP_PASS !== undefined ? process.env.SMTP_PASS : (settings?.smtp_pass || '')).trim();
+  return smtpHost !== '' && smtpUser !== '' && smtpPass !== '';
+};
+
+const checkIsWabaConfigured = async () => {
+  try {
+    const superAdminRole = await Role.findOne({ name: 'super_admin' });
+    if (!superAdminRole) return false;
+    const admin = await User.findOne({ role_id: superAdminRole._id, deleted_at: null });
+    if (!admin) return false;
+
+    const connection = await WhatsappWaba.findOne({
+      user_id: admin._id,
+      connection_status: { $in: ['connected', 'initial'] },
+      deleted_at: null
+    }).lean();
+    if (!connection) return false;
+
+    const accessToken = connection.access_token;
+    const phoneNumber = await WhatsappPhoneNumber.findOne({ waba_id: connection._id, is_active: true }).lean();
+    const phoneNumberId = phoneNumber?.phone_number_id;
+
+    if (!accessToken || !phoneNumberId) return false;
+    return true;
+  } catch (error) {
+    console.error('Error checking WABA configuration:', error);
+    return false;
+  }
+};
+
 
 export const register = async (req, res) => {
   const { name, email, phone, countryCode, password } = req.body;
@@ -232,6 +337,57 @@ export const register = async (req, res) => {
       email_verified: false
     };
 
+    const isSmtpConfigured = checkIsSmtpConfigured(settings);
+    const otpChannel = settings?.otp_delivery_method || 'email';
+    const isDemoMode = settings?.is_demo_mode || false;
+
+    let shouldUseDemoOTP = false;
+    if (isDemoMode || !isSmtpConfigured) {
+      shouldUseDemoOTP = true;
+    } else if (otpChannel === 'whatsapp') {
+      const isWabaConfigured = await checkIsWabaConfigured();
+      let isTemplateAssigned = false;
+      if (settings?.whatsapp_otp_template_id) {
+        const template = await Template.findById(settings.whatsapp_otp_template_id);
+        if (template) {
+          isTemplateAssigned = true;
+        }
+      }
+      
+      if (!isWabaConfigured || !isTemplateAssigned) {
+        shouldUseDemoOTP = true;
+      }
+    }
+
+    if (shouldUseDemoOTP) {
+      const demoOTP = '123456';
+      const hashedOTP = await OTPService.hashOTP(demoOTP);
+      const expiresAt = getOTPExpirationTime();
+
+      const redisClient = getRedisClient();
+      await redisClient.setex(`pending_user:${normalizedEmail}`, 600, JSON.stringify(pendingUser));
+
+      await OTPLog.create({
+        email: normalizedEmail,
+        otp: hashedOTP,
+        channel: otpChannel,
+        email_count: otpChannel === 'email' ? 1 : 0,
+        whatsapp_count: otpChannel === 'whatsapp' ? 1 : 0,
+        expires_at: expiresAt,
+        last_sent_at: new Date()
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: `Registration OTP sent to ${otpChannel === 'whatsapp' ? 'WhatsApp' : 'email'}`,
+        data: {
+          redirect: '/verify-signup-otp',
+          identifier: normalizedEmail,
+          demo_otp: demoOTP
+        }
+      });
+    }
+
     const redisClient = getRedisClient();
     await redisClient.setex(`pending_user:${normalizedEmail}`, 600, JSON.stringify(pendingUser));
 
@@ -239,8 +395,6 @@ export const register = async (req, res) => {
     const hashedOTP = await OTPService.hashOTP(otp);
     const expiryMinutes = await OTPService.getOTPExpiryMinutes();
     const expiresAt = new Date(Date.now() + expiryMinutes * 60 * 1000);
-
-    const otpChannel = settings?.otp_delivery_method || 'email';
 
     await OTPLog.create({
       email: normalizedEmail,
@@ -254,9 +408,25 @@ export const register = async (req, res) => {
 
     const otpResult = await OTPService.sendOTPBySettings(normalizedEmail, otp, { phone, country_code: countryCode, user_name: name });
     if (!otpResult) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to send OTP. Please try again later.'
+      try {
+        const redisClient = getRedisClient();
+        await redisClient.del(`pending_user:${normalizedEmail}`);
+      } catch (redisErr) {
+        console.error('Failed to clear pending user from Redis:', redisErr);
+      }
+
+      pendingUser.is_verified = true;
+      pendingUser.email_verified = true;
+      pendingUser.phone_verified = true;
+      
+      await finalizeUserCreation(pendingUser, false);
+
+      return res.status(201).json({
+        success: true,
+        message: 'Registration successful',
+        data: {
+          redirect: '/login'
+        }
       });
     }
 
@@ -1178,81 +1348,29 @@ export const verifySignUpOTP = async (req, res) => {
     otpLog.verified = true;
     await otpLog.save();
 
+    const settings = await Setting.findOne().sort({ created_at: -1 });
+    const isSmtpConfigured = checkIsSmtpConfigured(settings);
+    const isDemoMode = settings?.is_demo_mode || false;
+
     if (pendingUser) {
-      user = await User.create(pendingUser);
       if (redisClient) {
         await redisClient.del(`pending_user:${validation.normalizedValue}`);
       }
 
-      await EmailTemplateService.send('welcome-message', user.email, {
-        user_name: user.name,
-        user_email: user.email
-      });
+      pendingUser.is_verified = true;
+      if (otpLog.channel === 'email') pendingUser.email_verified = true;
+      if (otpLog.channel === 'whatsapp') pendingUser.phone_verified = true;
 
-
-      try {
-        const superAdminRoles = await Role.find({ name: 'super_admin' }).distinct('_id');
-        const allSuperAdmins = await User.find({ role_id: { $in: superAdminRoles }, deleted_at: null });
-
-        for (const admin of allSuperAdmins) {
-          await Contact.create({
-            name: user.name,
-            email: user.email,
-            phone_number: user.phone,
-            user_id: admin._id,
-            created_by: admin._id,
-            source: 'whatsapp',
-            status: 'lead'
-          }).catch(err => {
-            if (err.code !== 11000) console.error('Auto contact create error (signup):', err);
-          });
-        }
-      } catch (syncError) {
-        console.error('Failed to sync new user to admin contacts:', syncError);
-      }
+      user = await finalizeUserCreation(pendingUser, isSmtpConfigured && !isDemoMode);
 
       otpLog.user_id = user._id;
       await otpLog.save();
-
-      try {
-        const userWithRole = await User.findById(user._id).populate('role_id');
-        if (userWithRole && userWithRole.role_id && userWithRole.role_id.name === 'user') {
-          const settings = await Setting.findOne().sort({ created_at: -1 });
-          if (settings && settings.free_trial_enabled && settings.free_trial_days > 0) {
-            const trialPlan = await Plan.findOne({
-              billing_cycle: 'free Trial',
-              is_active: true,
-              deleted_at: null
-            });
-
-            if (trialPlan) {
-              const trialEndsAt = new Date();
-              trialEndsAt.setDate(trialEndsAt.getDate() + settings.free_trial_days);
-
-              await Subscription.create({
-                user_id: user._id,
-                plan_id: trialPlan._id,
-                status: 'trial',
-                current_period_start: new Date(),
-                current_period_end: trialEndsAt,
-                trial_ends_at: trialEndsAt,
-                started_at: new Date(),
-                features: trialPlan.features
-              });
-            } else {
-              console.warn('Free trial enabled but no active "free Trial" plan found.');
-            }
-          }
-        }
-      } catch (trialError) {
-        console.error('Failed to assign free trial to new user:', trialError);
-      }
+    } else {
+      user.is_verified = true;
+      if (otpLog.channel === 'email') user.email_verified = true;
+      if (otpLog.channel === 'whatsapp') user.phone_verified = true;
+      await user.save();
     }
-
-    user.is_verified = true;
-    if (otpLog.channel === 'email') user.email_verified = true;
-    if (otpLog.channel === 'whatsapp') user.phone_verified = true;
-    await user.save();
 
     return res.status(200).json({
       success: true,

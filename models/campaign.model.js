@@ -34,8 +34,7 @@ const RecipientSchema = new mongoose.Schema({
     required: true
   },
   phone_number: {
-    type: String,
-    required: true
+    type: String
   },
   status: {
     type: String,
@@ -88,10 +87,18 @@ const CampaignSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  platform: {
+    type: String,
+    enum: ['whatsapp', 'telegram', 'facebook', 'instagram', 'all'],
+    default: 'whatsapp'
+  },
+  workspace_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace'
+  },
   waba_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'WhatsappWaba',
-    required: true
+    ref: 'WhatsappWaba'
   },
 
   template_id: {
@@ -141,6 +148,13 @@ const CampaignSchema = new mongoose.Schema({
     default: null
   },
 
+  location_data: {
+    latitude: { type: String, default: null },
+    longitude: { type: String, default: null },
+    name: { type: String, default: null },
+    address: { type: String, default: null }
+  },
+
   carousel_products: [{
     product_retailer_id: { type: String, required: true },
     catalog_id: { type: String, required: true }
@@ -152,8 +166,12 @@ const CampaignSchema = new mongoose.Schema({
       id: { type: String },
       link: { type: String }
     },
+    body: {
+      type: String
+    },
     buttons: [{
       type: { type: String, enum: ['quick_reply', 'url'] },
+      text: { type: String },
       payload: { type: String },
       url_value: { type: String }
     }]
@@ -191,7 +209,7 @@ const CampaignSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['draft', 'scheduled', 'sending', 'completed', 'failed', 'cancelled'],
+    enum: ['draft', 'scheduled', 'sending', 'completed', 'failed', 'cancelled', 'completed_with_errors'],
     default: 'draft'
   },
 

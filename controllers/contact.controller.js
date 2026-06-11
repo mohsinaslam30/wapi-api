@@ -360,8 +360,10 @@ export const getContacts = async (req, res) => {
       assigned_to,
       tags,
       is_unsubscribed,
+      source,
       sort_by = 'created_at',
-      sort_order = 'desc'
+      sort_order = 'desc',
+      platform
     } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -405,9 +407,15 @@ export const getContacts = async (req, res) => {
     }
 
 
+    const tenantFilter = {
+      $or: [
+        { user_id: userId },
+        { created_by: userId }
+      ]
+    };
+
     const query = {
-      created_by: req.user.owner_id,
-      user_id: userId,
+      ...tenantFilter,
       deleted_at: null
     };
 
@@ -421,7 +429,7 @@ export const getContacts = async (req, res) => {
       }).select('_id');
       const tagIds = matchingTags.map(t => t._id);
 
-      query.$or = [
+      const searchOr = [
         { name: searchRegex },
         { phone_number: searchRegex },
         { email: searchRegex },
@@ -430,6 +438,12 @@ export const getContacts = async (req, res) => {
         { 'metadata.address': searchRegex },
         { 'custom_fields.address': searchRegex }
       ];
+
+      query.$and = [
+        tenantFilter,
+        { $or: searchOr }
+      ];
+      delete query.$or;
     }
 
     if (status) {
@@ -448,6 +462,22 @@ export const getContacts = async (req, res) => {
 
     if (is_unsubscribed !== undefined) {
       query.is_unsubscribed = is_unsubscribed === 'true';
+    }
+
+    if (source) {
+      query.source = source.toLowerCase();
+    }
+
+    if (platform) {
+      if (platform === 'whatsapp') {
+        query.phone_number = { $exists: true, $ne: '' };
+      } else if (platform === 'telegram') {
+        query.telegram_chat_id = { $exists: true, $ne: '' };
+      } else if (platform === 'facebook') {
+        query.facebook_page_scoped_id = { $exists: true, $ne: '' };
+      } else if (platform === 'instagram') {
+        query.instagram_scoped_id = { $exists: true, $ne: '' };
+      }
     }
 
     console.log("query", query);
@@ -505,7 +535,7 @@ export const getContactById = async (req, res) => {
 
     const contact = await Contact.findOne({
       _id: id,
-      user_id: req.user.owner_id,
+      $or: [{ user_id: req.user.owner_id }, { created_by: req.user.owner_id }],
       deleted_at: null
     }).populate('assigned_to', 'name email')
       .populate({
@@ -553,7 +583,7 @@ export const updateContact = async (req, res) => {
 
     const contact = await Contact.findOne({
       _id: id,
-      user_id: req.user.owner_id,
+      $or: [{ user_id: req.user.owner_id }, { created_by: req.user.owner_id }],
       deleted_at: null
     });
 
@@ -576,7 +606,7 @@ export const updateContact = async (req, res) => {
 
       const existingContact = await Contact.findOne({
         phone_number: updateData.phone_number,
-        user_id: req.user.owner_id,
+        $or: [{ user_id: req.user.owner_id }, { created_by: req.user.owner_id }],
         deleted_at: null,
         _id: { $ne: id }
       });
@@ -686,7 +716,7 @@ export const deleteContact = async (req, res) => {
 
     const contact = await Contact.findOne({
       _id: id,
-      user_id: req.user.owner_id,
+      $or: [{ user_id: req.user.owner_id }, { created_by: req.user.owner_id }],
       deleted_at: null
     });
 
@@ -761,7 +791,7 @@ export const bulkDeleteContacts = async (req, res) => {
 
     const existingContacts = await Contact.find({
       _id: { $in: validIds },
-      user_id: req.user.owner_id,
+      $or: [{ user_id: req.user.owner_id }, { created_by: req.user.owner_id }],
       deleted_at: null
     }).select('_id');
 

@@ -22,7 +22,10 @@ const checkUserSubscriptionStatus = async (userId, userRole = null) => {
       user_id: effectiveUserId,
       deleted_at: null,
       status: { $in: ['active', 'trial'] },
-      current_period_end: { $gte: new Date() },
+      $or: [
+        { current_period_end: { $gte: new Date() } },
+        { current_period_end: null }
+      ]
     })
       .populate('plan_id')
       .lean();
@@ -149,6 +152,9 @@ export const getUserSettings = async (req, res) => {
         whatsapp_optin_keyword: userSettings.whatsapp_optin_keyword,
         whatsapp_unsubscribe_message: userSettings.whatsapp_unsubscribe_message,
         whatsapp_resubscribe_message: userSettings.whatsapp_resubscribe_message,
+        catalog_payment_link_enabled: userSettings.catalog_payment_link_enabled ?? false,
+        catalog_payment_link_automatic: userSettings.catalog_payment_link_automatic ?? false,
+        catalog_payment_link_gateway: userSettings.catalog_payment_link_gateway ?? null,
       },
     });
   } catch (error) {
@@ -166,7 +172,7 @@ export const updateUserSettings = async (req, res) => {
   try {
     const userId = req.user.id;
     const body = req.body || {};
-    const { ai_model, api_key, is_show_phone_no, notification_tone, notifications_enabled, theme_color, user_bubble_color, contact_bubble_color, bg_color, user_text_color, contact_text_color, payment_success_message, payment_failed_message, payment_reminder_enabled, payment_reminder_delay, payment_reminder_unit, payment_reminder_message, disable_admin_quick_reply, whatsapp_optout_keyword, whatsapp_optin_keyword, whatsapp_unsubscribe_message, whatsapp_resubscribe_message } = body;
+    const { ai_model, api_key, is_show_phone_no, notification_tone, notifications_enabled, theme_color, user_bubble_color, contact_bubble_color, bg_color, user_text_color, contact_text_color, payment_success_message, payment_failed_message, payment_reminder_enabled, payment_reminder_delay, payment_reminder_unit, payment_reminder_message, disable_admin_quick_reply, whatsapp_optout_keyword, whatsapp_optin_keyword, whatsapp_unsubscribe_message, whatsapp_resubscribe_message, catalog_payment_link_enabled, catalog_payment_link_automatic, catalog_payment_link_gateway } = body;
 
     const user = await User.findById(userId);
     if (!user) {
@@ -207,6 +213,9 @@ export const updateUserSettings = async (req, res) => {
       if (whatsapp_optin_keyword !== undefined) userSettings.whatsapp_optin_keyword = whatsapp_optin_keyword;
       if (whatsapp_unsubscribe_message !== undefined) userSettings.whatsapp_unsubscribe_message = whatsapp_unsubscribe_message;
       if (whatsapp_resubscribe_message !== undefined) userSettings.whatsapp_resubscribe_message = whatsapp_resubscribe_message;
+      if (catalog_payment_link_enabled !== undefined) userSettings.catalog_payment_link_enabled = catalog_payment_link_enabled;
+      if (catalog_payment_link_automatic !== undefined) userSettings.catalog_payment_link_automatic = catalog_payment_link_automatic;
+      if (catalog_payment_link_gateway !== undefined) userSettings.catalog_payment_link_gateway = catalog_payment_link_gateway === '' ? null : catalog_payment_link_gateway;
 
       if (req.files && req.files.bg_image) {
         const file = Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image;
@@ -242,6 +251,9 @@ export const updateUserSettings = async (req, res) => {
         whatsapp_optin_keyword: whatsapp_optin_keyword ?? ['START'],
         whatsapp_unsubscribe_message: whatsapp_unsubscribe_message ?? 'You have been unsubscribed and will no longer receive messages. Reply {optin_keywords} to subscribe again.',
         whatsapp_resubscribe_message: whatsapp_resubscribe_message ?? 'Welcome back! You have been re-subscribed to our broadcasts.',
+        catalog_payment_link_enabled: catalog_payment_link_enabled ?? false,
+        catalog_payment_link_automatic: catalog_payment_link_automatic ?? false,
+        catalog_payment_link_gateway: catalog_payment_link_gateway || null,
         bg_image: (req.files && req.files.bg_image) ? (
           (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path.startsWith('http')
             ? (Array.isArray(req.files.bg_image) ? req.files.bg_image[0] : req.files.bg_image).path
@@ -283,6 +295,9 @@ export const updateUserSettings = async (req, res) => {
         whatsapp_optin_keyword: userSettings.whatsapp_optin_keyword,
         whatsapp_unsubscribe_message: userSettings.whatsapp_unsubscribe_message,
         whatsapp_resubscribe_message: userSettings.whatsapp_resubscribe_message,
+        catalog_payment_link_enabled: userSettings.catalog_payment_link_enabled ?? false,
+        catalog_payment_link_automatic: userSettings.catalog_payment_link_automatic ?? false,
+        catalog_payment_link_gateway: userSettings.catalog_payment_link_gateway ?? null,
       }
     });
   } catch (error) {

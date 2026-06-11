@@ -38,15 +38,42 @@ class PaymentLinkService {
     };
     if (gateway_config_id) gatewayQuery._id = gateway_config_id;
 
-    const gatewayConfig = await PaymentGatewayConfig.findOne(gatewayQuery).lean();
-    if (!gatewayConfig) {
+    const gatewayConfigDoc = await PaymentGatewayConfig.findOne(gatewayQuery);
+    if (!gatewayConfigDoc) {
       throw new Error('No active payment gateway found. Please configure a payment gateway first.');
     }
+
+    const baseUrl = process.env.APP_URL || 'https://yourdomain.com';
+    const expectedWebhookUrl = `${baseUrl}/api/payments/webhook/${gatewayConfigDoc.gateway}`;
+
+    if (!gatewayConfigDoc.webhook_id || gatewayConfigDoc.webhook_url !== expectedWebhookUrl) {
+      console.log(`[PaymentLinkService] Webhook URL mismatch or missing. Re-registering webhook for ${gatewayConfigDoc.gateway}...`);
+
+      if (gatewayConfigDoc.webhook_id) {
+        try {
+          await paymentGatewayService.unregisterWebhook(gatewayConfigDoc.toObject());
+        } catch (err) {
+          console.warn(`[PaymentLinkService] Failed to unregister old webhook: ${err.message}`);
+        }
+      }
+
+      try {
+        const webhookInfo = await paymentGatewayService.registerWebhook(gatewayConfigDoc.toObject(), baseUrl);
+        gatewayConfigDoc.webhook_id = webhookInfo.webhook_id;
+        gatewayConfigDoc.webhook_secret = webhookInfo.webhook_secret;
+        gatewayConfigDoc.webhook_url = webhookInfo.webhook_url;
+        await gatewayConfigDoc.save();
+        console.log(`[PaymentLinkService] Webhook re-registered successfully: ${webhookInfo.webhook_id}`);
+      } catch (err) {
+        console.error(`[PaymentLinkService] Webhook auto-registration failed:`, err.message);
+      }
+    }
+
+    const gatewayConfig = gatewayConfigDoc.toObject();
 
     const contact = await Contact.findById(contact_id).lean();
     if (!contact) throw new Error('Contact not found');
 
-    const baseUrl = process.env.APP_URL || 'https://yourdomain.com';
     const linkResult = await paymentGatewayService.createPaymentLink(gatewayConfig, {
       amount,
       currency,
@@ -317,14 +344,30 @@ class PaymentLinkService {
       const order = await EcommerceOrder.findById(transaction.context_id);
       if (!order) return;
 
+      let statusChanged = false;
       if (status === 'paid') {
         order.payment_status = 'paid';
+        if (order.status === 'pending') {
+          order.status = 'confirmed';
+          statusChanged = true;
+        }
       } else if (status === 'failed') {
         order.payment_status = 'unpaid';
       }
 
       await order.save();
-      console.log(`[PaymentLinkService] Catalog order ${order._id} payment_status → ${order.payment_status}`);
+      console.log(`[PaymentLinkService] Catalog order ${order._id} payment_status → ${order.payment_status}, status → ${order.status}`);
+
+      if (statusChanged) {
+        try {
+          const { sendOrderStatusNotification } = await import('../controllers/ecommerce-order.controller.js');
+          const populatedOrder = await EcommerceOrder.findById(order._id).populate('contact_id');
+          await sendOrderStatusNotification(populatedOrder, 'confirmed');
+          console.log(`[PaymentLinkService] Automatically sent order confirmation notification for paid order: ${order._id}`);
+        } catch (notificationErr) {
+          console.error('[PaymentLinkService] Failed to send order status notification on payment:', notificationErr.message);
+        }
+      }
     } catch (err) {
       console.error('[PaymentLinkService] _handleCatalogPayment error:', err.message);
     }

@@ -122,7 +122,8 @@ class PaymentGatewayService {
       );
       return {
         webhook_id: response.data.id,
-        webhook_secret: response.data.secret
+        webhook_secret: response.data.secret,
+        webhook_url: webhookUrl
       };
     } catch (err) {
       const msg = err.response?.data?.error?.description || err.message;
@@ -187,7 +188,8 @@ class PaymentGatewayService {
       });
       return {
         webhook_id: webhook.id,
-        webhook_secret: webhook.secret
+        webhook_secret: webhook.secret,
+        webhook_url: webhookUrl
       };
     } catch (err) {
       throw new Error(`Stripe webhook registration failed: ${err.message}`);
@@ -288,7 +290,8 @@ class PaymentGatewayService {
 
       return {
         webhook_id: response.data.id,
-        webhook_secret: response.data.id
+        webhook_secret: response.data.id,
+        webhook_url: webhookUrl
       };
     } catch (err) {
       const msg = err.response?.data?.message || err.message;

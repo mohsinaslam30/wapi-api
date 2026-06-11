@@ -79,6 +79,557 @@ export const processCampaignMessageJob = async (jobData) => {
       throw new Error(`Campaign ${campaignId} not found`);
     }
 
+    const template = await Template.findById(campaign.template_id);
+    if (!template) {
+      throw new Error(`Template not found for campaign ${campaignId}`);
+    }
+
+    const templateVariables = {};
+    if (templateData.variables && typeof templateData.variables === 'object') {
+      Object.keys(templateData.variables).forEach(key => {
+        templateVariables[key] = templateData.variables[key];
+      });
+    }
+
+    const campaignPlatform = campaign.platform || 'whatsapp';
+
+    if (campaignPlatform !== 'whatsapp') {
+      const contactDoc = recipient.contact_id
+        ? await Contact.findById(recipient.contact_id).lean()
+        : await Contact.findOne({
+          $or: [
+            { phone_number: recipient.phone_number },
+            { telegram_chat_id: recipient.phone_number },
+            { facebook_page_scoped_id: recipient.phone_number },
+            { instagram_scoped_id: recipient.phone_number }
+          ],
+          created_by: userId,
+          deleted_at: null
+        }).lean();
+
+      let resultMsgId = '';
+      let provider = campaignPlatform;
+      let senderId = '';
+      let resolvedCarouselElements = null;
+
+      if (campaignPlatform === 'telegram') {
+        const { default: TelegramConnection } = await import('../models/telegram-connection.model.js');
+        const bot = await TelegramConnection.findOne({ user_id: userId, is_active: true });
+        if (!bot) {
+          throw new Error('No active Telegram bot found for user');
+        }
+
+        let bodyText = template.message_body || '';
+        for (const [key, val] of Object.entries(templateVariables)) {
+          bodyText = bodyText.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
+        }
+
+        let telegramText = '';
+        if (template.header && template.header.format === 'text' && template.header.text) {
+          telegramText += template.header.text + '\n\n';
+        }
+        telegramText += bodyText;
+        if (template.footer_text) {
+          telegramText += '\n\n' + template.footer_text;
+        }
+
+        if (template.is_limited_time_offer && template.offer_text) {
+          telegramText += '\n\nOffer: ' + template.offer_text;
+        }
+
+        if (campaign.coupon_code) {
+          telegramText += `\n\nCoupon Code: ${campaign.coupon_code}`;
+        }
+
+
+
+        const otpButtons = (template.authentication_options?.otp_buttons || []).map((btn) => {
+          return {
+            text: btn.copy_button_text || 'Copy Code',
+            value: templateVariables.code || templateVariables['code'] || 'copy_code',
+            id: templateVariables.code || templateVariables['code'] || 'copy_code'
+          };
+        });
+
+        let buttonsToPass = [];
+        const rawButtons = [
+          ...otpButtons,
+          ...(template.buttons || [])
+        ];
+
+        if (rawButtons.length > 0) {
+          buttonsToPass = rawButtons.map((btn, index) => {
+            if (btn.type === 'url' || btn.type === 'website') {
+              const btnUrl = btn.url || btn.website_url || '';
+              return {
+                text: btn.text,
+                url: btnUrl,
+                type: 'url'
+              };
+            }
+            if (btn.type === 'phone_call') {
+              const phone = templateVariables.phone_number || templateVariables.phone || templateVariables.contact_number || btn.phone_number || '';
+              return {
+                text: btn.text || 'Call',
+                id: `phone_call|${phone}`
+              };
+            }
+            if (btn.type === 'copy_code') {
+              const code = templateVariables.coupon_code || templateVariables.code || campaign.coupon_code || btn.text || 'COUPON';
+              return {
+                text: code,
+                id: `copy_code|${code}`
+              };
+            }
+            return {
+              text: btn.text || btn.title,
+              id: btn.value || btn.id || btn.payload || `btn_${index + 1}`
+            };
+          });
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+
+        let msgType = 'text';
+        let locationParams = {};
+        let mediaUrlToSend = templateData.media_url;
+        if (!mediaUrlToSend && template.header && template.header.format === 'media' && template.header.media_url) {
+          mediaUrlToSend = template.header.media_url;
+        }
+
+        if (templateData.location_data && templateData.location_data.latitude && templateData.location_data.longitude) {
+          msgType = 'location';
+          locationParams = {
+            latitude: templateData.location_data.latitude,
+            longitude: templateData.location_data.longitude,
+            name: templateData.location_data.name,
+            address: templateData.location_data.address
+          };
+        } else if (mediaUrlToSend) {
+          const extension = mediaUrlToSend.split('.').pop().toLowerCase().split('?')[0];
+          if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) msgType = 'image';
+          else if (['mp4', 'mov', 'avi', 'mkv'].includes(extension)) msgType = 'video';
+          else if (['mp3', 'ogg', 'wav', 'm4a'].includes(extension)) msgType = 'audio';
+          else msgType = 'document';
+        }
+
+        let carouselElements = null;
+        const isCarousel = template && ['carousel_product', 'carousel_media'].includes((template.template_type || '').toLowerCase());
+        if (isCarousel) {
+          msgType = 'carousel';
+          const carouselCardsData = templateData.carousel_cards_data && Array.isArray(templateData.carousel_cards_data) ? templateData.carousel_cards_data : [];
+          const templateCards = template.carousel_cards && Array.isArray(template.carousel_cards) ? template.carousel_cards : [];
+
+          if (carouselCardsData.length > 0 || templateCards.length > 0) {
+            const limit = Math.min(Math.max(carouselCardsData.length, templateCards.length), 10);
+            carouselElements = [];
+            for (let i = 0; i < limit; i++) {
+              const cardData = carouselCardsData[i] || {};
+              const tCard = templateCards[i] || {};
+              const bodyComp = (tCard.components || []).find(c => c.type === 'BODY' || c.type === 'body');
+              const title = (cardData.body || bodyComp?.text || telegramText || "Card").substring(0, 80);
+              const element = { title };
+
+              if (cardData.header && cardData.header.link) {
+                element.image_url = cardData.header.link;
+              } else {
+                const headerComp = (tCard.components || []).find(c => c.type === 'HEADER' || c.type === 'header');
+                if (headerComp && headerComp.example?.header_url) {
+                  element.image_url = Array.isArray(headerComp.example.header_url) ? headerComp.example.header_url[0] : headerComp.example.header_url;
+                } else if (mediaUrlToSend && i === 0) {
+                  element.image_url = mediaUrlToSend;
+                }
+              }
+
+              let cardButtons = cardData.buttons || [];
+              if (!cardButtons.length) {
+                const btnComp = (tCard.components || []).filter(c => c.type === 'BUTTONS' || c.type === 'buttons');
+                if (btnComp.length > 0 && btnComp[0].buttons) {
+                  cardButtons = btnComp[0].buttons;
+                }
+              }
+
+              if (cardButtons && Array.isArray(cardButtons) && cardButtons.length > 0) {
+                element.buttons = cardButtons.slice(0, 3).map(btn => {
+                  const isUrl = (btn.type || '').toLowerCase() === 'url' || (btn.type || '').toLowerCase() === 'website';
+                  const btnObj = {
+                    text: btn.text || btn.title || 'Button'
+                  };
+                  if (isUrl) {
+                    btnObj.type = 'url';
+                    btnObj.url = btn.url_value || btn.url || 'https://example.com';
+                  } else {
+                    btnObj.type = 'postback';
+                    btnObj.id = btn.payload || btn.text || 'btn';
+                  }
+                  return btnObj;
+                });
+              }
+              carouselElements.push(element);
+            }
+            resolvedCarouselElements = carouselElements;
+          }
+        }
+
+        const recipientId = contactDoc?.telegram_chat_id || recipient.phone_number;
+
+        const result = await omnichannelService.sendMessage({
+          platform: 'telegram',
+          workspace_id: bot.workspace_id,
+          recipient_id: recipientId,
+          message_type: msgType,
+          text: telegramText,
+          file_url: mediaUrlToSend,
+          buttons: buttonsToPass,
+          carousel_elements: carouselElements,
+          ...locationParams
+        });
+
+        resultMsgId = result?.message_id?.toString() || `tg_${Date.now()}`;
+        senderId = bot.bot_id;
+        provider = 'telegram';
+
+      } else if (campaignPlatform === 'facebook' || campaignPlatform === 'instagram') {
+        const platform = campaignPlatform;
+        let connection = null;
+        if (platform === 'facebook') {
+          const { default: FacebookConnection } = await import('../models/facebook-connection.model.js');
+          connection = await FacebookConnection.findOne({ workspace_id: contactDoc?.workspace_id, is_active: true });
+          if (!connection) {
+            connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+          }
+        } else {
+          const { default: InstagramConnection } = await import('../models/instagram-connection.model.js');
+          connection = await InstagramConnection.findOne({ workspace_id: contactDoc?.workspace_id, is_active: true });
+          if (!connection) {
+            connection = await InstagramConnection.findOne({ user_id: userId, is_active: true });
+          }
+        }
+
+        if (!connection) {
+          throw new Error(`No active ${platform} connection found for user`);
+        }
+
+        let pageId = null;
+        if (contactDoc) {
+          const lastMsg = await Message.findOne({ contact_id: contactDoc._id }).sort({ wa_timestamp: -1 }).lean();
+          if (lastMsg) {
+            pageId = lastMsg.direction === 'inbound' ? lastMsg.recipient_id : lastMsg.sender_id;
+          }
+        }
+
+        if (platform === 'facebook') {
+          if (!pageId) {
+            const page = connection.pages?.find(p => p.is_active !== false);
+            pageId = page?.page_id;
+          }
+          if (!pageId) throw new Error(`No active Facebook Page found for this connection`);
+        } else {
+          if (!pageId) {
+            pageId = connection.ig_user_id || (connection.pages && connection.pages[0]?.instagram_account_id);
+          }
+          if (!pageId) throw new Error(`No active Instagram Account found for this connection`);
+        }
+
+        const recipientId = platform === 'facebook'
+          ? (contactDoc?.facebook_page_scoped_id || recipient.phone_number)
+          : (contactDoc?.instagram_scoped_id || recipient.phone_number);
+
+        if (!recipientId) {
+          throw new Error(`Recipient scoped ID not found for contact`);
+        }
+
+        let bodyText = template.message_body || '';
+        for (const [key, val] of Object.entries(templateVariables)) {
+          bodyText = bodyText.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
+        }
+
+        let fbIgText = '';
+        if (template.header && template.header.format === 'text' && template.header.text) {
+          fbIgText += template.header.text + '\n\n';
+        }
+        fbIgText += bodyText;
+        if (template.footer_text) {
+          fbIgText += '\n\n' + template.footer_text;
+        }
+
+        if (template.is_limited_time_offer && template.offer_text) {
+          fbIgText += '\n\nOffer: ' + template.offer_text;
+        }
+
+        if (campaign.coupon_code) {
+          fbIgText += `\n\nCoupon Code: ${campaign.coupon_code}`;
+        }
+
+
+
+        const otpButtons = (template.authentication_options?.otp_buttons || []).map((btn) => {
+          return {
+            text: btn.copy_button_text || 'Copy Code',
+            value: templateVariables.code || templateVariables['code'] || 'copy_code',
+            id: templateVariables.code || templateVariables['code'] || 'copy_code'
+          };
+        });
+
+        let buttonsToPass = [];
+        const rawButtons = [
+          ...otpButtons,
+          ...(template.buttons || [])
+        ];
+
+        if (rawButtons.length > 0) {
+          buttonsToPass = rawButtons.map((btn, index) => {
+            if (btn.type === 'url' || btn.type === 'website') {
+              const btnUrl = btn.url || btn.website_url || '';
+              return {
+                text: btn.text,
+                url: btnUrl,
+                type: 'url'
+              };
+            }
+            if (btn.type === 'phone_call') {
+              const phone = templateVariables.phone_number || templateVariables.phone || templateVariables.contact_number || btn.phone_number || '';
+              return {
+                text: btn.text || 'Call',
+                id: `phone_call|${phone}`
+              };
+            }
+            if (btn.type === 'copy_code') {
+              const code = templateVariables.coupon_code || templateVariables.code || campaign.coupon_code || btn.text || 'COUPON';
+              return {
+                text: code,
+                id: `copy_code|${code}`
+              };
+            }
+            return {
+              text: btn.text || btn.title,
+              id: btn.value || btn.id || btn.payload || `btn_${index + 1}`
+            };
+          });
+        }
+
+        const { default: omnichannelService } = await import('../services/messaging/omnichannel.service.js');
+
+        let msgType = 'text';
+        let locationParams = {};
+        let mediaUrlToSend = templateData.media_url;
+        if (!mediaUrlToSend && template.header && template.header.format === 'media' && template.header.media_url) {
+          mediaUrlToSend = template.header.media_url;
+        }
+
+        if (templateData.location_data && templateData.location_data.latitude && templateData.location_data.longitude) {
+          msgType = 'location';
+          locationParams = {
+            latitude: templateData.location_data.latitude,
+            longitude: templateData.location_data.longitude,
+            name: templateData.location_data.name,
+            address: templateData.location_data.address
+          };
+        } else if (!mediaUrlToSend) {
+          const carouselCardsData = templateData.carousel_cards_data && Array.isArray(templateData.carousel_cards_data) ? templateData.carousel_cards_data : [];
+          if (carouselCardsData.length > 0) {
+            const firstCard = carouselCardsData[0];
+            if (firstCard.header && firstCard.header.link) {
+              mediaUrlToSend = firstCard.header.link;
+            }
+          } else if (template.carousel_cards && template.carousel_cards.length > 0) {
+            const firstCard = template.carousel_cards[0];
+            const headerComp = (firstCard.components || []).find(c => (c.type || '').toLowerCase() === 'header');
+            if (headerComp && headerComp.example?.header_url) {
+              mediaUrlToSend = Array.isArray(headerComp.example.header_url)
+                ? headerComp.example.header_url[0]
+                : headerComp.example.header_url;
+            }
+          }
+        }
+
+        let carouselElements = null;
+        const isCarousel = template && ['carousel_product', 'carousel_media'].includes((template.template_type || '').toLowerCase());
+        if (isCarousel && platform !== 'whatsapp') {
+          msgType = 'carousel';
+          const carouselCardsData = templateData.carousel_cards_data && Array.isArray(templateData.carousel_cards_data) ? templateData.carousel_cards_data : [];
+          const templateCards = template.carousel_cards && Array.isArray(template.carousel_cards) ? template.carousel_cards : [];
+
+          if (carouselCardsData.length > 0 || templateCards.length > 0) {
+            const limit = Math.min(Math.max(carouselCardsData.length, templateCards.length), 10);
+            carouselElements = [];
+            for (let i = 0; i < limit; i++) {
+              const cardData = carouselCardsData[i] || {};
+              const tCard = templateCards[i] || {};
+              const bodyComp = (tCard.components || []).find(c => c.type === 'BODY' || c.type === 'body');
+              const title = (cardData.body || bodyComp?.text || fbIgText || "Card").substring(0, 80);
+              const element = { title };
+
+              if (cardData.header && cardData.header.link) {
+                element.image_url = cardData.header.link;
+              } else {
+                const headerComp = (tCard.components || []).find(c => c.type === 'HEADER' || c.type === 'header');
+                if (headerComp && headerComp.example?.header_url) {
+                  element.image_url = Array.isArray(headerComp.example.header_url) ? headerComp.example.header_url[0] : headerComp.example.header_url;
+                } else if (mediaUrlToSend && i === 0) {
+                  element.image_url = mediaUrlToSend;
+                }
+              }
+
+              let cardButtons = cardData.buttons || [];
+              if (!cardButtons.length) {
+                const btnComp = (tCard.components || []).filter(c => c.type === 'BUTTONS' || c.type === 'buttons');
+                if (btnComp.length > 0 && btnComp[0].buttons) {
+                  cardButtons = btnComp[0].buttons;
+                }
+              }
+
+              if (cardButtons && Array.isArray(cardButtons) && cardButtons.length > 0) {
+                element.buttons = cardButtons.slice(0, 3).map(btn => {
+                  const btnType = (btn.type || '').toLowerCase() === 'url' ? 'web_url' : 'postback';
+                  const btnObj = {
+                    type: btnType,
+                    title: (btn.text || btn.title || 'Button').substring(0, 20)
+                  };
+                  if (btnType === 'web_url') {
+                    btnObj.url = btn.url_value || btn.url || 'https://example.com';
+                  } else {
+                    btnObj.payload = btn.payload || btn.text || 'btn';
+                  }
+                  return btnObj;
+                });
+              }
+              carouselElements.push(element);
+            }
+            resolvedCarouselElements = carouselElements;
+          }
+        } else if (msgType !== 'location' && mediaUrlToSend) {
+          const extension = mediaUrlToSend.split('.').pop().toLowerCase().split('?')[0];
+          if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) msgType = 'image';
+          else if (['mp4', 'mov', 'avi', 'mkv'].includes(extension)) msgType = 'video';
+          else if (['mp3', 'ogg', 'wav', 'm4a'].includes(extension)) msgType = 'audio';
+          else msgType = 'document';
+        }
+
+        if (msgType === 'text' && buttonsToPass.length > 0) {
+          msgType = 'interactive';
+        }
+
+        const result = await omnichannelService.sendMessage({
+          platform,
+          workspace_id: connection.workspace_id,
+          page_id: pageId,
+          recipient_id: recipientId,
+          message_type: msgType,
+          text: fbIgText,
+          file_url: mediaUrlToSend,
+          buttons: buttonsToPass,
+          carousel_elements: carouselElements,
+          ...locationParams
+        });
+
+        resultMsgId = result?.message_id?.toString() || `fbig_${Date.now()}`;
+        senderId = pageId;
+        provider = platform;
+      }
+
+      const existingMessage = await Message.findOne({
+        wa_message_id: resultMsgId,
+        recipient_number: recipient.phone_number
+      });
+
+      if (!existingMessage) {
+        await Message.create({
+          sender_number: senderId,
+          recipient_number: recipient.phone_number,
+          contact_id: recipient.contact_id,
+          user_id: userId,
+          template_id: campaign.template_id,
+          content: `Campaign: ${campaign.name} - Template: ${templateData.template_name}`,
+          message_type: 'template',
+          from_me: true,
+          direction: 'outbound',
+          wa_message_id: resultMsgId,
+          wa_timestamp: new Date(),
+          metadata: {
+            campaign_id: campaign._id,
+            template_name: templateData.template_name,
+            language_code: templateData.language_code,
+            variables: templateData.variables,
+            components: []
+          },
+          interactive_data: resolvedCarouselElements ? { cards: resolvedCarouselElements } : null,
+          provider: provider
+        });
+      }
+
+      let updateResult;
+      if (recipient.contact_id) {
+        updateResult = await Campaign.updateOne(
+          { _id: campaign._id, "recipients.contact_id": recipient.contact_id },
+          {
+            $set: {
+              "recipients.$.status": 'sent',
+              "recipients.$.sent_at": new Date(),
+              "recipients.$.message_id": resultMsgId,
+              updated_at: new Date()
+            }
+          }
+        );
+      } else {
+        updateResult = await Campaign.updateOne(
+          {
+            _id: campaign._id,
+            "recipients.phone_number": recipient.phone_number,
+            "recipients.status": "pending"
+          },
+          {
+            $set: {
+              "recipients.$.status": 'sent',
+              "recipients.$.sent_at": new Date(),
+              "recipients.$.message_id": resultMsgId,
+              updated_at: new Date()
+            }
+          }
+        );
+      }
+
+      if (updateResult.modifiedCount > 0) {
+        const campaignStats = await Campaign.findById(campaign._id, {
+          'recipients.status': 1,
+          'sent_at': 1
+        });
+
+        if (campaignStats && campaignStats.recipients) {
+          const sentCount = campaignStats.recipients.filter(r => r.status === 'sent').length;
+          const pendingCount = campaignStats.recipients.filter(r => r.status === 'pending').length;
+          const failedCount = campaignStats.recipients.filter(r => r.status === 'failed').length;
+
+          if (pendingCount === 0) {
+            const status = failedCount > 0 ? 'completed_with_errors' : 'completed';
+            const updateData = {
+              status,
+              completed_at: new Date(),
+              updated_at: new Date(),
+              'stats.sent_count': sentCount,
+              'stats.pending_count': pendingCount,
+              'stats.failed_count': failedCount
+            };
+            if (campaign.sent_at) {
+              const startTime = new Date(campaign.sent_at);
+              const endTime = new Date(updateData.completed_at);
+              updateData.completion_duration_seconds = Math.round((endTime - startTime) / 1000);
+            }
+            await Campaign.findByIdAndUpdate(campaign._id, updateData);
+          }
+        }
+      }
+
+      return {
+        success: true,
+        recipientId: recipient.contact_id,
+        phone_number: recipient.phone_number,
+        messageId: resultMsgId,
+        provider: provider,
+        phoneUsed: senderId
+      };
+    }
+
     const phoneNumbers = await WhatsappPhoneNumber.find({
       waba_id: wabaId,
       is_active: true,
@@ -97,17 +648,11 @@ export const processCampaignMessageJob = async (jobData) => {
       last_used_at: new Date()
     });
 
-    const templateVariables = {};
-    if (templateData.variables && typeof templateData.variables === 'object') {
-      Object.keys(templateData.variables).forEach(key => {
-        templateVariables[key] = templateData.variables[key];
-      });
-    }
-
     let templateComponents = [];
-
-    const template = await Template.findById(campaign.template_id);
     const isAuthenticationTemplate = template && template.category && template.category.toUpperCase() === 'AUTHENTICATION';
+
+    const templateType = template ? (template.template_type || '').toLowerCase() : '';
+    const isCarouselTemplate = template && ['carousel_product', 'carousel_media'].includes(templateType);
 
     console.log('Campaign template ID:', campaign.template_id);
     console.log('Template found:', !!template);
@@ -115,7 +660,20 @@ export const processCampaignMessageJob = async (jobData) => {
     console.log('Template variables from job data:', templateData.variables);
     console.log('Template body variables:', template?.body_variables);
 
-    if (templateData.media_url) {
+    if (templateData.location_data && templateData.location_data.latitude && templateData.location_data.longitude) {
+      templateComponents.push({
+        type: 'header',
+        parameters: [{
+          type: 'location',
+          location: {
+            latitude: Number(templateData.location_data.latitude),
+            longitude: Number(templateData.location_data.longitude),
+            ...(templateData.location_data.name ? { name: templateData.location_data.name } : {}),
+            ...(templateData.location_data.address ? { address: templateData.location_data.address } : {})
+          }
+        }]
+      });
+    } else if (templateData.media_url) {
       let mediaType = 'image';
       if (templateData.media_url.endsWith('.mp4') || templateData.media_url.includes('video')) mediaType = 'video';
       if (templateData.media_url.endsWith('.pdf') || templateData.media_url.includes('document')) mediaType = 'document';
@@ -257,8 +815,7 @@ export const processCampaignMessageJob = async (jobData) => {
       }
     }
 
-    const templateType = template ? (template.template_type || '').toLowerCase() : '';
-    const isCarouselTemplate = template && ['carousel_product', 'carousel_media'].includes(templateType);
+
     const carouselProducts = templateData.carousel_products && Array.isArray(templateData.carousel_products) ? templateData.carousel_products : [];
     const carouselCardsData = templateData.carousel_cards_data && Array.isArray(templateData.carousel_cards_data) ? templateData.carousel_cards_data : [];
     if (isCarouselTemplate) {
@@ -418,10 +975,16 @@ export const processCampaignMessageJob = async (jobData) => {
 
     const result = await unifiedWhatsAppService.sendMessage(userId, messageParams);
 
-    const existingMessage = await Message.findOne({
-      wa_message_id: result.messageId || result.id,
-      recipient_number: recipient.phone_number
-    });
+    let existingMessage = null;
+    if (result.messageId && typeof result.messageId === 'string' && result.messageId.length === 24) {
+      existingMessage = await Message.findById(result.messageId);
+    }
+    if (!existingMessage) {
+      existingMessage = await Message.findOne({
+        wa_message_id: result.waMessageId || result.messageId || result.id,
+        recipient_number: recipient.phone_number
+      });
+    }
 
     if (!existingMessage) {
       await Message.create({
@@ -434,7 +997,7 @@ export const processCampaignMessageJob = async (jobData) => {
         message_type: 'template',
         from_me: true,
         direction: 'outbound',
-        wa_message_id: result.messageId || result.id,
+        wa_message_id: result.waMessageId || result.messageId || result.id,
         wa_timestamp: new Date(),
         metadata: {
           campaign_id: campaign._id,
@@ -447,7 +1010,24 @@ export const processCampaignMessageJob = async (jobData) => {
         provider: result.provider
       });
     } else {
-      console.log(`Message already exists, skipping duplicate: ${result.messageId || result.id}`);
+      console.log(`Message already exists, updating campaign metadata: ${existingMessage._id}`);
+      if (!existingMessage.metadata) {
+        existingMessage.metadata = {};
+      }
+      existingMessage.metadata.campaign_id = campaign._id;
+      existingMessage.metadata.template_name = templateData.template_name;
+      existingMessage.metadata.language_code = templateData.language_code;
+      existingMessage.metadata.variables = templateData.variables;
+      existingMessage.metadata.components = [];
+      await Message.updateOne(
+        { _id: existingMessage._id },
+        {
+          $set: {
+            metadata: existingMessage.metadata,
+            template_id: campaign.template_id
+          }
+        }
+      );
     }
 
 

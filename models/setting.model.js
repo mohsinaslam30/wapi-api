@@ -237,6 +237,13 @@ const settingSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+
+  ig_app_id: { type: String, required: false },
+  ig_app_secret: { type: String, required: false },
+  twitter_client_id: { type: String, default: null },
+  twitter_client_secret: { type: String, default: null },
+  twitter_redirect_uri: { type: String, default: null },
+  
   max_groups_per_user: {
     type: Number,
     default: 500
@@ -258,6 +265,14 @@ const settingSchema = new mongoose.Schema({
     default: null
   },
   facebook_lead_webhook_verify_token: {
+    type: String,
+    default: null
+  },
+  instagram_webhook_url: {
+    type: String,
+    default: null
+  },
+  instagram_webhook_verify_token: {
     type: String,
     default: null
   },
@@ -317,6 +332,11 @@ const settingSchema = new mongoose.Schema({
     type: [String],
     enum: ['manual', 'qr_scan', 'embedded_signup'],
     default: ['manual']
+  },
+  omnichannel_platforms: {
+    type: [String],
+    enum: ['facebook', 'instagram', 'telegram', 'twitter'],
+    default: ['facebook', 'instagram', 'telegram', 'twitter']
   },
   is_stripe_active: {
     type: Boolean,
@@ -417,6 +437,88 @@ const settingSchema = new mongoose.Schema({
   whatsapp_otp_variable_mapping: {
     type: mongoose.Schema.Types.Mixed,
     default: {}
+  },
+  cookie_enabled: {
+    type: Boolean,
+    default: false
+  },
+  cookie_text: {
+    type: String,
+    default: "We use cookies on our site to enhance your user experience, provide personalized content, and analyze our traffic. [page:cookie-policy|Cookie Policy]"
+  },
+  cookie_accept_text: {
+    type: String,
+    default: "Accept all"
+  },
+  cookie_decline_text: {
+    type: String,
+    default: "Reject non-essential"
+  },
+  cookie_pref_text: {
+    type: String,
+    default: "Preferences"
+  },
+  is_banner: {
+    type: Boolean,
+    default: false
+  },
+  banner_text: {
+    type: String,
+    default: 'Welcome to our platform! Enjoy our premium services.'
+  },
+  banner_possion: {
+    type: String,
+    enum: ['left', 'center', 'right'],
+    default: 'center'
+  },
+  banner_bg_color: {
+    type: String,
+    default: '#f59e0b'
+  },
+  banner_text_color: {
+    type: String,
+    default: '#000000'
+  },
+  signup_agree_enable: {
+    type: Boolean,
+    default: false
+  },
+  signup_agree_prefix: {
+    type: String,
+    default: 'I agree to the'
+  },
+  signup_agree_link_text: {
+    type: String,
+    default: 'Privacy Policy'
+  },
+  signup_agree_page: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Page',
+    default: null
+  },
+  widget_enabled: {
+    type: Boolean,
+    default: true
+  },
+  widget_whatsapp_url: {
+    type: String,
+    default: ''
+  },
+  widget_telegram_url: {
+    type: String,
+    default: ''
+  },
+  widget_instagram_url: {
+    type: String,
+    default: ''
+  },
+  widget_facebook_url: {
+    type: String,
+    default: ''
+  },
+  widget_sms_url: {
+    type: String,
+    default: ''
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

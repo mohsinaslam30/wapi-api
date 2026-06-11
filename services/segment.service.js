@@ -201,14 +201,23 @@ export const removeContactFromAllSegments = async (contactIds, userId) => {
   }
 };
 
-export const getContactsForSegments = async (segmentIds, userId) => {
+export const getContactsForSegments = async (segmentIds, userId, workspaceId) => {
   if (!Array.isArray(segmentIds) || segmentIds.length === 0) return [];
 
-  return await Contact.find({
+  const query = {
     segments: { $in: segmentIds },
     user_id: userId,
     deleted_at: null
-  });
+  };
+  if (workspaceId) {
+    query.$or = [
+      { workspace_id: workspaceId },
+      { workspace_id: null },
+      { workspace_id: { $exists: false } }
+    ];
+  }
+
+  return await Contact.find(query);
 };
 
 export const getSegmentById = async (segmentId, userId) => {

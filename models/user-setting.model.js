@@ -105,6 +105,19 @@ const userSettingSchema = new mongoose.Schema({
   whatsapp_resubscribe_message: {
     type: String,
     default: 'Welcome back! You have been re-subscribed to our broadcasts.'
+  },
+  catalog_payment_link_enabled: {
+    type: Boolean,
+    default: false
+  },
+  catalog_payment_link_automatic: {
+    type: Boolean,
+    default: false
+  },
+  catalog_payment_link_gateway: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PaymentGatewayConfig',
+    default: null
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

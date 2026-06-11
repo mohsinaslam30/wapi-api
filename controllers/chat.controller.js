@@ -443,22 +443,26 @@ export const addNote = async (req, res) => {
       });
     }
 
-    const whatsappPhoneNumber = await WhatsappPhoneNumber.findOne({
-      _id: whatsapp_phone_number_id,
-      user_id: userId,
-      deleted_at: null
-    });
-
-    if (!whatsappPhoneNumber) {
-      return res.status(404).json({
-        success: false,
-        message: 'WhatsApp phone number not found'
+    let phoneIdToSave = null;
+    if (mongoose.Types.ObjectId.isValid(whatsapp_phone_number_id)) {
+      const whatsappPhoneNumber = await WhatsappPhoneNumber.findOne({
+        _id: whatsapp_phone_number_id,
+        user_id: userId,
+        deleted_at: null
       });
+
+      if (!whatsappPhoneNumber) {
+        return res.status(404).json({
+          success: false,
+          message: 'WhatsApp phone number not found'
+        });
+      }
+      phoneIdToSave = whatsapp_phone_number_id;
     }
 
     const newNote = await ChatNote.create({
       contact_id: contact_id,
-      whatsapp_phone_number_id: whatsapp_phone_number_id,
+      whatsapp_phone_number_id: phoneIdToSave,
       note: note.trim()
     });
 
@@ -720,22 +724,26 @@ export const assignChatToAgent = async (req, res) => {
       });
     }
 
-    const phoneNumber = await WhatsappPhoneNumber.findOne({
-      _id: whatsapp_phone_number_id,
-      user_id: adminId,
-      deleted_at: null
-    });
+    let businessPhoneNumber = whatsapp_phone_number_id;
+    let actualPhoneId = whatsapp_phone_number_id;
 
-    if (!phoneNumber) {
-      return res.status(404).json({
-        success: false,
-        message: 'WhatsApp phone number not found or you do not own it'
+    if (mongoose.Types.ObjectId.isValid(whatsapp_phone_number_id)) {
+      const phoneNumber = await WhatsappPhoneNumber.findOne({
+        _id: whatsapp_phone_number_id,
+        user_id: adminId,
+        deleted_at: null
       });
+
+      if (!phoneNumber) {
+        return res.status(404).json({
+          success: false,
+          message: 'WhatsApp phone number not found or you do not own it'
+        });
+      }
+      businessPhoneNumber = phoneNumber.display_phone_number;
     }
 
     const contactPhoneNumber = contact.phone_number;
-    const businessPhoneNumber = phoneNumber.display_phone_number;
-
     const sender_number = contactPhoneNumber;
     const receiver_number = businessPhoneNumber;
 
@@ -746,7 +754,7 @@ export const assignChatToAgent = async (req, res) => {
       ]
     };
     const existingAssignment = await ChatAssignment.findOne({
-      whatsapp_phone_number_id,
+      whatsapp_phone_number_id: actualPhoneId,
       ...chatMatch
     });
 
@@ -772,7 +780,7 @@ export const assignChatToAgent = async (req, res) => {
         agent_id: agent_id || null,
         chatbot_id: chatbot_id || null,
         assigned_by: req.user.id,
-        whatsapp_phone_number_id,
+        whatsapp_phone_number_id: actualPhoneId,
         status: 'assigned'
       });
     }
@@ -813,21 +821,26 @@ export const unassignChatFromAgent = async (req, res) => {
       });
     }
 
-    const phoneNumber = await WhatsappPhoneNumber.findOne({
-      _id: whatsapp_phone_number_id,
-      user_id: adminId,
-      deleted_at: null
-    });
+    let businessPhoneNumber = whatsapp_phone_number_id;
+    let actualPhoneId = whatsapp_phone_number_id;
 
-    if (!phoneNumber) {
-      return res.status(404).json({
-        success: false,
-        message: 'WhatsApp phone number not found or you do not own it'
+    if (mongoose.Types.ObjectId.isValid(whatsapp_phone_number_id)) {
+      const phoneNumber = await WhatsappPhoneNumber.findOne({
+        _id: whatsapp_phone_number_id,
+        user_id: adminId,
+        deleted_at: null
       });
+
+      if (!phoneNumber) {
+        return res.status(404).json({
+          success: false,
+          message: 'WhatsApp phone number not found or you do not own it'
+        });
+      }
+      businessPhoneNumber = phoneNumber.display_phone_number;
     }
 
     const contactPhoneNumber = contact.phone_number;
-    const businessPhoneNumber = phoneNumber.display_phone_number;
 
     const chatMatch = {
       $or: [
@@ -837,7 +850,7 @@ export const unassignChatFromAgent = async (req, res) => {
     };
 
     const assignment = await ChatAssignment.findOne({
-      whatsapp_phone_number_id,
+      whatsapp_phone_number_id: actualPhoneId,
       ...chatMatch,
       status: 'assigned'
     });
@@ -893,17 +906,19 @@ export const updateChatStatus = async (req, res) => {
       });
     }
 
-    const phoneNumber = await WhatsappPhoneNumber.findOne({
-      _id: whatsapp_phone_number_id,
-      user_id: userId,
-      deleted_at: null
-    });
-
-    if (!phoneNumber) {
-      return res.status(404).json({
-        success: false,
-        message: 'WhatsApp phone number not found or you do not own it'
+    if (mongoose.Types.ObjectId.isValid(whatsapp_phone_number_id)) {
+      const phoneNumber = await WhatsappPhoneNumber.findOne({
+        _id: whatsapp_phone_number_id,
+        user_id: userId,
+        deleted_at: null
       });
+
+      if (!phoneNumber) {
+        return res.status(404).json({
+          success: false,
+          message: 'WhatsApp phone number not found or you do not own it'
+        });
+      }
     }
 
     contact.chat_status = status;

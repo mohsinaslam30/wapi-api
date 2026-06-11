@@ -34,6 +34,7 @@ const paymentGatewayConfigSchema = new mongoose.Schema({
 
   webhook_id: { type: String },
   webhook_secret: { type: String },
+  webhook_url: { type: String },
 
   deleted_at: { type: Date, default: null }
 }, {

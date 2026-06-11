@@ -7,9 +7,8 @@ const messageBotSchema = new mongoose.Schema({
         required: true,
         index: true
     },
-    waba_id: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'WhatsappWaba',
+    account_id: {
+        type: String,
         required: true,
         index: true
     },
@@ -57,6 +56,29 @@ const messageBotSchema = new mongoose.Schema({
     coupon_code: String,
     catalog_id: String,
     product_retailer_id: String,
+    platform: {
+        type: String,
+        enum: ['whatsapp', 'telegram', 'facebook', 'instagram', 'all'],
+        default: 'whatsapp',
+        index: true
+    },
+    recipient_type: {
+        type: String,
+        enum: ['all_contacts', 'specific_contacts', 'tags', 'segments'],
+        default: 'all_contacts'
+    },
+    specific_contacts: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Contact'
+    }],
+    tag_ids: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Tag'
+    }],
+    segment_ids: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Segment'
+    }],
     status: {
         type: String,
         enum: ['active', 'inactive'],
@@ -73,6 +95,6 @@ const messageBotSchema = new mongoose.Schema({
     collection: 'message_bots'
 });
 
-messageBotSchema.index({ waba_id: 1, status: 1, deleted_at: 1 });
+messageBotSchema.index({ account_id: 1, status: 1, deleted_at: 1 });
 
 export default mongoose.model('MessageBot', messageBotSchema);

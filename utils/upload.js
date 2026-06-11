@@ -1,8 +1,9 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { User, Setting, Subscription, Plan } from '../models/index.js';
+import { User, Setting, Subscription, Plan, Attachment } from '../models/index.js';
 import AWSStorage from './aws-storage.js';
+import mongoose from 'mongoose';
 
 const mimeToExtension = {
   'image/jpeg': 'jpg',
@@ -82,7 +83,17 @@ async function getDynamicSettings(req = null) {
     }).lean();
     if (subscription) {
       if (subscription.is_custom) {
-        planFeatures = subscription.features;
+        const customFeatures = subscription.features || {};
+        if (subscription.plan_id) {
+          const plan = await Plan.findById(subscription.plan_id).select('features').lean();
+          if (plan && plan.features) {
+            planFeatures = { ...plan.features, ...customFeatures };
+          } else {
+            planFeatures = customFeatures;
+          }
+        } else {
+          planFeatures = customFeatures;
+        }
       } else if (subscription.plan_id) {
         const plan = await Plan.findById(subscription.plan_id).select('features').lean();
         if (plan && plan.features) {
@@ -98,15 +109,15 @@ async function getDynamicSettings(req = null) {
 
   const allowedTypes = setting?.allowed_file_upload_types || [];
   const limits = {
-    document: ((planFeatures?.document_file_limit && planFeatures.document_file_limit > 0) ? planFeatures.document_file_limit : (setting?.document_file_limit || 10)) * 1024 * 1024,
-    audio: ((planFeatures?.audio_file_limit && planFeatures.audio_file_limit > 0) ? planFeatures.audio_file_limit : (setting?.audio_file_limit || 10)) * 1024 * 1024,
-    video: ((planFeatures?.video_file_limit && planFeatures.video_file_limit > 0) ? planFeatures.video_file_limit : (setting?.video_file_limit || 10)) * 1024 * 1024,
-    image: ((planFeatures?.image_file_limit && planFeatures.image_file_limit > 0) ? planFeatures.image_file_limit : (setting?.image_file_limit || 5)) * 1024 * 1024,
+    document: (setting?.document_file_limit || 10) * 1024 * 1024,
+    audio: (setting?.audio_file_limit || 10) * 1024 * 1024,
+    video: (setting?.video_file_limit || 10) * 1024 * 1024,
+    image: (setting?.image_file_limit || 5) * 1024 * 1024,
     file: 25 * 1024 * 1024,
     multiple: planFeatures?.multiple_file_share_limit || setting?.multiple_file_share_limit || 10
   };
 
-  return { allowedTypes, limits };
+  return { allowedTypes, limits, planFeatures };
 }
 
 function createUploader(subfolder = '') {
@@ -133,7 +144,7 @@ const asyncFileFilter = async (req, file, cb) => {
   const ext = mimeToExtension[file.mimetype] || path.extname(file.originalname).slice(1).toLowerCase();
 
   if (allowedTypes.includes(ext)) cb(null, true);
- 	else cb(new Error(`File type '${ext}' not allowed.`), false);
+  else cb(new Error(`File type '${ext}' not allowed.`), false);
 };
 
 const fileFilter = (req, file, cb) => {
@@ -144,7 +155,7 @@ const fileFilter = (req, file, cb) => {
 };
 
 const checkUserStorageLimit = async (req, files) => {
-  const userId = req.user?.owner_id;
+  const userId = req.user?.owner_id || req.user?.id;
   if (!userId) return;
 
   const user = await User.findById(userId).select('storage_limit storage_used').lean();
@@ -156,8 +167,22 @@ const checkUserStorageLimit = async (req, files) => {
   const currentUsageBytes = user.storage_used || 0;
 
   let totalNewFilesSize = 0;
+  const newSizesByType = {
+    document: 0,
+    audio: 0,
+    video: 0,
+    image: 0,
+    file: 0
+  };
+
   for (const file of files) {
     totalNewFilesSize += file.size;
+    const type = getTypePrefix(file.mimetype);
+    if (newSizesByType[type] !== undefined) {
+      newSizesByType[type] += file.size;
+    } else {
+      newSizesByType.file += file.size;
+    }
   }
 
   if (userStorageLimitBytes > 0 && (currentUsageBytes + totalNewFilesSize) > userStorageLimitBytes) {
@@ -165,6 +190,53 @@ const checkUserStorageLimit = async (req, files) => {
       if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
     }
     throw new Error(`You have reached your storage limit. Please delete some files or contact support to increase your quota. (Remaining: ${((userStorageLimitBytes - currentUsageBytes) / (1024 * 1024)).toFixed(2)} MB)`);
+  }
+
+  const { planFeatures } = await getDynamicSettings(req);
+  if (planFeatures) {
+    const fileSizes = await Attachment.aggregate([
+      { $match: { createdBy: new mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: '$fileType',
+          totalSize: { $sum: '$fileSize' }
+        }
+      }
+    ]);
+
+    const usageMap = {
+      document: 0,
+      audio: 0,
+      video: 0,
+      image: 0,
+      file: 0
+    };
+
+    if (Array.isArray(fileSizes)) {
+      fileSizes.forEach(item => {
+        if (item._id && usageMap[item._id] !== undefined) {
+          usageMap[item._id] = item.totalSize;
+        }
+      });
+    }
+
+    const fileTypesToCheck = ['document', 'audio', 'video', 'image'];
+    for (const type of fileTypesToCheck) {
+      const planLimitMB = planFeatures[`${type}_file_limit`] || 0;
+      if (planLimitMB > 0) {
+        const limitBytes = planLimitMB * 1024 * 1024;
+        const currentTypeUsageBytes = usageMap[type] || 0;
+        const newTypeUsageBytes = newSizesByType[type] || 0;
+
+        if ((currentTypeUsageBytes + newTypeUsageBytes) > limitBytes) {
+          for (const file of files) {
+            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          }
+          const remainingMB = Math.max(0, (limitBytes - currentTypeUsageBytes) / (1024 * 1024)).toFixed(2);
+          throw new Error(`You have reached your plan limit for ${type} files. Max allowed is ${planLimitMB} MB. (Remaining: ${remainingMB} MB)`);
+        }
+      }
+    }
   }
 };
 
@@ -207,9 +279,12 @@ function uploader(subfolder = '') {
         if (file.size > maxSize) {
           const maxSizeMB = (maxSize / (1024 * 1024)).toFixed(1);
           const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
-          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          for (const f of files) {
+            if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          }
           return res.status(400).json({
-            message: `${file.originalname} is too large (${fileSizeMB} MB). Max allowed for ${type} is ${maxSizeMB} MB.`
+            message: `${file.originalname} is too large (${fileSizeMB} MB). Max allowed for ${type} is ${maxSizeMB} MB.`,
+            error: `${file.originalname} is too large (${fileSizeMB} MB). Max allowed for ${type} is ${maxSizeMB} MB.`
           });
         }
       }
@@ -228,7 +303,7 @@ function uploader(subfolder = '') {
       } else if (err) {
         return res.status(400).json({ message: err.message || 'File upload failed' });
       }
-      
+
       try {
         await checkFileSizes(req, res, async () => {
           let files = [];
@@ -239,7 +314,7 @@ function uploader(subfolder = '') {
           }
 
           const setting = await Setting.findOne({ is_aws_s3_enabled: true }).select('aws_access_key_id aws_secret_access_key aws_region aws_s3_bucket is_aws_s3_enabled').lean();
-          
+
           if (setting && setting.is_aws_s3_enabled) {
             const aws = new AWSStorage({
               accessKeyId: setting.aws_access_key_id,
@@ -256,7 +331,7 @@ function uploader(subfolder = '') {
                   const localPath = file.path;
                   file.path = s3Url;
                   file.is_s3 = true;
-                  
+
                   if (fs.existsSync(localPath) && subfolder !== 'imports') {
                     fs.unlinkSync(localPath);
                   }
@@ -318,38 +393,51 @@ const uploadFiles = (subfolder = '', fieldName = 'files') => {
       if (err) return res.status(400).json({ error: err.message });
 
         try {
-          await checkUserStorageLimit(req, req.files);
-        } catch (error) {
-          return res.status(400).json({ error: error.message });
-        }
-
-        const setting = await Setting.findOne({ is_aws_s3_enabled: true }).select('aws_access_key_id aws_secret_access_key aws_region aws_s3_bucket is_aws_s3_enabled').lean();
-        if (setting && setting.is_aws_s3_enabled) {
-          const aws = new AWSStorage({
-            accessKeyId: setting.aws_access_key_id,
-            secretAccessKey: setting.aws_secret_access_key,
-            region: setting.aws_region,
-            bucket: setting.aws_s3_bucket
-          });
-
-          if (aws.isConfigured()) {
+          if (req.files && req.files.length > 0) {
             for (const file of req.files) {
-              const userId = req.user?.owner_id || req.user?.id || req.user?._id;
-              try {
-                const s3Url = await aws.uploadFile(file, subfolder, userId);
-                const localPath = file.path;
-                file.path = s3Url;
-                file.is_s3 = true;
-                if (fs.existsSync(localPath) && subfolder !== 'imports') fs.unlinkSync(localPath);
-              } catch (e) { 
-                console.error("S3 Upload failed, falling back to local storage", e); 
-                file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
-                file.is_s3 = false;
+              const type = getTypePrefix(file.mimetype);
+              const maxSize = limits[type] || limits.file;
+
+              if (file.size > maxSize) {
+                const maxSizeMB = (maxSize / (1024 * 1024)).toFixed(1);
+                const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
+                for (const f of req.files) {
+                  if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
+                }
+                return res.status(400).json({
+                  error: `${file.originalname} is too large (${fileSizeMB} MB). Max allowed for ${type} is ${maxSizeMB} MB.`,
+                  message: `${file.originalname} is too large (${fileSizeMB} MB). Max allowed for ${type} is ${maxSizeMB} MB.`
+                });
               }
             }
-          } else {
-            for (const file of req.files) {
+          }
+          await checkUserStorageLimit(req, req.files);
+        } catch (error) {
+          return res.status(400).json({ error: error.message, message: error.message });
+        }
+
+      const setting = await Setting.findOne({ is_aws_s3_enabled: true }).select('aws_access_key_id aws_secret_access_key aws_region aws_s3_bucket is_aws_s3_enabled').lean();
+      if (setting && setting.is_aws_s3_enabled) {
+        const aws = new AWSStorage({
+          accessKeyId: setting.aws_access_key_id,
+          secretAccessKey: setting.aws_secret_access_key,
+          region: setting.aws_region,
+          bucket: setting.aws_s3_bucket
+        });
+
+        if (aws.isConfigured()) {
+          for (const file of req.files) {
+            const userId = req.user?.owner_id || req.user?.id || req.user?._id;
+            try {
+              const s3Url = await aws.uploadFile(file, subfolder, userId);
+              const localPath = file.path;
+              file.path = s3Url;
+              file.is_s3 = true;
+              if (fs.existsSync(localPath) && subfolder !== 'imports') fs.unlinkSync(localPath);
+            } catch (e) {
+              console.error("S3 Upload failed, falling back to local storage", e);
               file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
+              file.is_s3 = false;
             }
           }
         } else {
@@ -357,7 +445,12 @@ const uploadFiles = (subfolder = '', fieldName = 'files') => {
             file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
           }
         }
-        next();
+      } else {
+        for (const file of req.files) {
+          file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
+        }
+      }
+      next();
     });
   };
 };
@@ -387,19 +480,28 @@ const uploadSingle = (subfolder = '', fieldName = 'file', isStatus = false) => {
         try {
           const fileType = getTypePrefix(file.mimetype);
           const maxSize = isStatus ? MAX_STATUS_FILE_SIZE : limits[fileType] || limits.file;
-          
+
           if (file.size > maxSize) {
             if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-            return res.status(400).json({ message: `${file.originalname} file is too large.`});
+            return res.status(400).json({
+              message: `${file.originalname} file is too large.`,
+              error: `${file.originalname} file is too large.`
+            });
           }
 
-          if(isStatus && !['image', 'video'].includes(fileType)) {
+          if (isStatus && !['image', 'video'].includes(fileType)) {
             fs.unlinkSync(file.path);
-            return res.status(400).json({ message: 'Only image and video files are allowed for status.'});
+            return res.status(400).json({
+              message: 'Only image and video files are allowed for status.',
+              error: 'Only image and video files are allowed for status.'
+            });
           }
           await checkUserStorageLimit(req, [file]);
         } catch (error) {
-          return res.status(400).json({ error: error.message });
+          return res.status(400).json({
+            error: error.message,
+            message: error.message
+          });
         }
 
         const setting = await Setting.findOne({ is_aws_s3_enabled: true }).select('aws_access_key_id aws_secret_access_key aws_region aws_s3_bucket is_aws_s3_enabled').lean();
@@ -419,8 +521,8 @@ const uploadSingle = (subfolder = '', fieldName = 'file', isStatus = false) => {
               file.path = s3Url;
               file.is_s3 = true;
               if (fs.existsSync(localPath) && subfolder !== 'imports') fs.unlinkSync(localPath);
-            } catch (e) { 
-              console.error("S3 Upload failed, falling back to local storage", e); 
+            } catch (e) {
+              console.error("S3 Upload failed, falling back to local storage", e);
               file.path = path.join(file.destination, file.filename).replace(/\\/g, '/');
               file.is_s3 = false;
             }

@@ -149,6 +149,7 @@ import { checkImpersonationStatus, restrictImpersonationActions } from "./middle
 import facebookRoutes from "./routes/facebook.routes.js";
 import facebookAdRoutes from "./routes/facebook-ad-campaign.routes.js";
 import facebookLeadRoutes from "./routes/facebook-lead.routes.js";
+import omnichannelConnectionRoutes from "./routes/omnichannel-connection.routes.js";
 
 import wabaConfigurationRoutes from "./routes/waba-configuration.routes.js";
 import messageBotRoutes from "./routes/message-bot.routes.js";
@@ -161,7 +162,9 @@ import taxRoutes from "./routes/tax.routes.js";
 import appointmentRoutes from "./routes/appointment.routes.js";
 import paymentGatewayConfigRoutes from "./routes/payment-gateway-config.routes.js";
 import paymentWebhookRoutes from "./routes/payment-webhook.routes.js";
-
+import socialAutomationRoutes from "./routes/social-automation.routes.js";
+import shopifyRoutes from "./routes/shopify.routes.js";
+import planSnippetRoutes from "./routes/plan-snippet.routes.js";
 
 import { redirectShortLink } from "./controllers/short-link.controller.js";
 import { Setting } from "./models/index.js";
@@ -245,6 +248,7 @@ app.use("/api/api-keys", apiKeyRoutes);
 app.use("/api/widgets", widgetRoutes);
 app.use("/api/short-links", shortLinkRoutes);
 app.use("/api/import-jobs", importJobRoutes);
+app.use("/api/social-automation", socialAutomationRoutes);
 app.use("/api/reply-materials", replyMaterialRoutes);
 app.use("/api/working-hours", workingHoursRoutes);
 app.use("/api/workspaces", workspaceRoutes);
@@ -260,6 +264,7 @@ app.use("/api/segments", segmentRoutes);
 app.use("/api/facebook", facebookRoutes);
 app.use("/api/facebook-ads", facebookAdRoutes);
 app.use("/api/facebook-leads", facebookLeadRoutes);
+app.use("/api/channels", omnichannelConnectionRoutes);
 app.use("/api/guides", guideRoutes);
 app.use("/api/self-tenant", selfTenantRoutes);
 app.use("/api/email-templates", emailTemplateRoutes);
@@ -275,6 +280,8 @@ app.use("/api/taxes", taxRoutes);
 app.use("/api/appointments", appointmentRoutes);
 
 app.use("/api/payment-gateways", paymentGatewayConfigRoutes);
+app.use("/api/shopify", shopifyRoutes);
+app.use("/api/plan-snippets", planSnippetRoutes);
 
 app.use("/api/payments", paymentWebhookRoutes);
 
@@ -283,6 +290,33 @@ app.use("/api/payments", paymentWebhookRoutes);
 app.get("/short_link/wp/:code", redirectShortLink);
 
 app.get("/webhook/whatsapp", handleWebhookVerification);
+
+// DISABLED: Twitter not working
+// app.get("/api/social/twitter/callback", async (req, res, next) => {
+//   try {
+//     const { twitterCallback } = await import("./controllers/omnichannel-connection.controller.js");
+//     return twitterCallback(req, res, next);
+//   } catch (err) {
+//     next(err);
+//   }
+// });
+
+app.get("/instagram-callback", (req, res) => {
+  const code = req.query.code;
+  const state = req.query.state;
+  const error = req.query.error;
+  const error_reason = req.query.error_reason;
+
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+  if (code) {
+    res.redirect(`${frontendUrl}/instagram-callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`);
+  } else if (error) {
+    res.redirect(`${frontendUrl}/instagram-callback?error=${encodeURIComponent(error)}&error_reason=${encodeURIComponent(error_reason)}`);
+  } else {
+    res.redirect(`${frontendUrl}/instagram-callback`);
+  }
+});
 
 app.post("/webhook/whatsapp", (req, res) => {
   const entry = req.body.entry?.[0];

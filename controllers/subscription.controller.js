@@ -1,4 +1,4 @@
-import { Subscription, AiPromptLog, Plan, PaymentHistory, User, Tag, Contact, QuickReply, Template, Campaign, CustomField, AutomationFlow, Team, Setting, Message, Form, WhatsappCallAgent, MessageBot, AppointmentBooking, KanbanFunnel, FacebookAdCampaign, Segment, Workspace, FacebookLead, GoogleAccount } from '../models/index.js';
+import { Subscription, AiPromptLog, Plan, PaymentHistory, User, Tag, Contact, QuickReply, Template, Campaign, CustomField, AutomationFlow, Team, Setting, Message, Form, WhatsappCallAgent, MessageBot, AppointmentBooking, KanbanFunnel, FacebookAdCampaign, Segment, Workspace, FacebookLead, GoogleAccount, Attachment } from '../models/index.js';
 import mongoose from 'mongoose';
 import {
     StripeService,
@@ -305,6 +305,7 @@ const buildSubscriptionAggregation = (matchQuery, skip, limit, sortField, sortOr
                 status: 1,
                 started_at: 1,
                 trial_ends_at: 1,
+                transaction_receipt: 1,
                 current_period_start: 1,
                 current_period_end: 1,
                 expires_at: 1,
@@ -568,7 +569,7 @@ export const rejectManualSubscription = async (req, res) => {
 const PLAN_SENSITIVE_FIELDS = '-stripe_price_id -stripe_product_id -stripe_payment_link_id -stripe_payment_link_url -razorpay_plan_id';
 
 const fetchDynamicUsage = async (userId) => {
-    const [tagsCount, contactsCount, templatesCount, campaignsCount, customFieldsCount, staffCount, botFlowsCount, aiPromptCount, messagesCount, teamsCount, formsCount, whatsapp_callingCount, messageBotsCount, appointmentBookingsCount, userResult, kanbanFunnelCount, facebookAdCampaignCount, segmentCount, workspaceCount, facebookLeadCount, googleAccountCount, quickReplyCount] = await Promise.all([
+    const [tagsCount, contactsCount, templatesCount, campaignsCount, customFieldsCount, staffCount, botFlowsCount, aiPromptCount, messagesCount, teamsCount, formsCount, whatsapp_callingCount, messageBotsCount, appointmentBookingsCount, userResult, kanbanFunnelCount, facebookAdCampaignCount, segmentCount, workspaceCount, facebookLeadCount, googleAccountCount, quickReplyCount, fileSizes] = await Promise.all([
         Tag.countDocuments({ created_by: userId, deleted_at: null }),
         Contact.countDocuments({ created_by: userId, deleted_at: null }),
         Template.countDocuments({ user_id: userId }),
@@ -591,9 +592,40 @@ const fetchDynamicUsage = async (userId) => {
         FacebookLead.countDocuments({ user_id: userId, deleted_at: null }),
         GoogleAccount.countDocuments({ user_id: userId, deleted_at: null }),
         QuickReply.countDocuments({ user_id: userId, deleted_at: null }),
+        Attachment.aggregate([
+            { $match: { createdBy: new mongoose.Types.ObjectId(userId) } },
+            {
+                $group: {
+                    _id: '$fileType',
+                    totalSize: { $sum: '$fileSize' }
+                }
+            }
+        ])
     ]);
 
     const storageUsedMB = parseFloat(((userResult?.storage_used || 0) / (1024 * 1024)).toFixed(2));
+
+    const usageMap = {
+        document: 0,
+        audio: 0,
+        video: 0,
+        image: 0,
+        file: 0
+    };
+
+    if (Array.isArray(fileSizes)) {
+        fileSizes.forEach(item => {
+            if (item._id && usageMap[item._id] !== undefined) {
+                usageMap[item._id] = item.totalSize;
+            }
+        });
+    }
+
+    const documentUsedMB = parseFloat((usageMap.document / (1024 * 1024)).toFixed(2));
+    const audioUsedMB = parseFloat((usageMap.audio / (1024 * 1024)).toFixed(2));
+    const videoUsedMB = parseFloat((usageMap.video / (1024 * 1024)).toFixed(2));
+    const imageUsedMB = parseFloat((usageMap.image / (1024 * 1024)).toFixed(2));
+
     return {
         tags_used: tagsCount,
         contacts_used: contactsCount,
@@ -617,10 +649,10 @@ const fetchDynamicUsage = async (userId) => {
         facebook_lead_used: facebookLeadCount,
         google_account_used: googleAccountCount,
         quick_replies_used: quickReplyCount,
-        document_file_limit_used: 0,
-        audio_file_limit_used: 0,
-        video_file_limit_used: 0,
-        image_file_limit_used: 0,
+        document_file_limit_used: documentUsedMB,
+        audio_file_limit_used: audioUsedMB,
+        video_file_limit_used: videoUsedMB,
+        image_file_limit_used: imageUsedMB,
         multiple_file_share_limit_used: 0
     };
 };
@@ -639,7 +671,7 @@ export const getUserSubscription = async (req, res) => {
         })
             .populate({
                 path: 'plan_id',
-                select: '_id name price features enabled_features is_featured',
+                select: '_id name price billing_cycle features enabled_features is_featured',
                 ...PLAN_SENSITIVE_FIELDS,
                 populate: {
                     path: 'currency taxes',
@@ -658,13 +690,19 @@ export const getUserSubscription = async (req, res) => {
 
         const setting = await Setting.findOne().select('storage_limit').lean();
         const storageLimit = setting?.storage_limit || 0;
-        const effectiveFeatures = subscription.is_custom && subscription.features
-            ? { ...(subscription.plan_id?.features || {}), ...subscription.features }
-            : (subscription.plan_id?.features || {});
+        let effectiveFeatures = {};
+        if (subscription.features && Object.keys(subscription.features).length > 0) {
+            effectiveFeatures = { ...(subscription.plan_id?.features || {}), ...subscription.features };
+        } else {
+            effectiveFeatures = { ...(subscription.plan_id?.features || {}) };
+        }
 
-        const effectiveEnabledFeatures = subscription.is_custom && subscription.enabled_features
-            ? { ...(subscription.plan_id?.enabled_features || {}), ...subscription.enabled_features }
-            : (subscription.plan_id?.enabled_features || {});
+        let effectiveEnabledFeatures = {};
+        if (subscription.enabled_features && Object.keys(subscription.enabled_features).length > 0) {
+            effectiveEnabledFeatures = { ...(subscription.plan_id?.enabled_features || {}), ...subscription.enabled_features };
+        } else {
+            effectiveEnabledFeatures = { ...(subscription.plan_id?.enabled_features || {}) };
+        }
 
         effectiveFeatures.storage = storageLimit;
         subscription.features = effectiveFeatures;
@@ -736,6 +774,7 @@ export const createStripeSubscription = async (req, res) => {
 
         if (!subscription) {
             const now = new Date();
+            const isLifetime = plan.billing_cycle === 'lifetime';
             const periodEnd = calculatePeriodEnd(now, plan.billing_cycle || 'monthly');
             subscription = await Subscription.create({
                 user_id: userId,
@@ -751,7 +790,8 @@ export const createStripeSubscription = async (req, res) => {
                 stripe_subscription_id: null,
                 taxes: plan.taxes || [],
                 features: plan.features,
-                auto_renew: true
+                auto_renew: !isLifetime,
+                enabled_features: plan.enabled_features
             });
         }
 
@@ -868,6 +908,7 @@ export const createManualSubscription = async (req, res) => {
             amount_paid: 0,
             taxes: plan.taxes || [],
             features: plan.features,
+            enabled_features: plan.enabled_features,
             auto_renew: false
         });
 
@@ -966,6 +1007,7 @@ export const createRazorpaySubscription = async (req, res) => {
                 razorpay_subscription_id: linkResult.id,
                 taxes: plan.taxes || [],
                 features: plan.features,
+                enabled_features: plan.enabled_features,
                 auto_renew: true
             });
         }
@@ -1073,6 +1115,7 @@ export const createPayPalSubscription = async (req, res) => {
                 paypal_subscription_id: paypalSubscription.id,
                 taxes: plan.taxes || [],
                 features: plan.features,
+                enabled_features: plan.enabled_features,
                 auto_renew: true
             });
         }
@@ -1186,6 +1229,7 @@ export const assignPlanToUser = async (req, res) => {
             amount_paid: amountPaid,
             taxes: plan.taxes || [],
             features: plan.features,
+            enabled_features: plan.enabled_features,
             auto_renew: false,
             notes: 'Admin assigned plan'
         });
@@ -1327,9 +1371,10 @@ export const resumeSubscription = async (req, res) => {
             await RazorpayService.resumeSubscription(subscription.razorpay_subscription_id);
         }
 
-        subscription.auto_renew = true;
+        const isLifetime = !subscription.current_period_end;
+        subscription.auto_renew = isLifetime ? false : true;
         subscription.cancelled_at = null;
-        if (subscription.status === 'canceled' && new Date() <= subscription.current_period_end) {
+        if (subscription.status === 'canceled' && (isLifetime || new Date() <= subscription.current_period_end)) {
             subscription.status = 'active';
         }
 
@@ -1431,7 +1476,9 @@ export const changeSubscriptionPlan = async (req, res) => {
                 currency: (newPlan.currency?.code || newPlan.currency || 'USD').toString().toUpperCase(),
                 paypal_subscription_id: paypalSubscription.id,
                 taxes: newPlan.taxes || [],
-                auto_rereturnDocument: 'after'
+                features: newPlan.features,
+                enabled_features: newPlan.enabled_features,
+                auto_renew: true
             });
 
             return res.status(200).json({
@@ -1471,7 +1518,9 @@ export const changeSubscriptionPlan = async (req, res) => {
                 currency: (newPlan.currency?.code || newPlan.currency || 'INR').toString().toUpperCase(),
                 stripe_subscription_id: null,
                 taxes: newPlan.taxes || [],
-                auto_rereturnDocument: 'after'
+                features: newPlan.features,
+                enabled_features: newPlan.enabled_features,
+                auto_renew: true
             });
 
             const separator = newPlan.stripe_payment_link_url.includes('?') ? '&' : '?';
@@ -1524,7 +1573,9 @@ export const changeSubscriptionPlan = async (req, res) => {
                 currency: (newPlan.currency?.code || newPlan.currency || 'INR').toString().toUpperCase(),
                 razorpay_subscription_id: linkResult.id,
                 taxes: newPlan.taxes || [],
-                auto_rereturnDocument: 'after'
+                features: newPlan.features,
+                enabled_features: newPlan.enabled_features,
+                auto_renew: true
             });
 
             return res.status(200).json({
@@ -1534,6 +1585,65 @@ export const changeSubscriptionPlan = async (req, res) => {
                     subscription: newSubscription,
                     subscription_link: linkResult.short_url,
                     payment_link: linkResult.short_url,
+                    new_plan_id: newPlan._id,
+                    new_plan_name: newPlan.name
+                }
+            });
+        }
+
+        if (subscription.payment_gateway === 'manual' || subscription.payment_gateway === 'admin generated') {
+            const existingPending = await Subscription.findOne({
+                user_id: userId,
+                plan_id: newPlan._id,
+                payment_gateway: 'manual',
+                status: 'pending',
+                deleted_at: null
+            });
+
+            if (existingPending) {
+                return res.status(200).json({
+                    success: true,
+                    message: 'Manual payment subscription change request already submitted. Awaiting admin approval.',
+                    data: {
+                        subscription: existingPending,
+                        new_plan_id: newPlan._id,
+                        new_plan_name: newPlan.name
+                    }
+                });
+            }
+
+            const now = new Date();
+            const periodEnd = calculatePeriodEnd(now, newPlan.billing_cycle || 'monthly');
+
+            const newSubscription = await Subscription.create({
+                user_id: userId,
+                plan_id: newPlan._id,
+                status: 'pending',
+                started_at: now,
+                current_period_start: now,
+                current_period_end: periodEnd,
+                payment_gateway: 'manual',
+                payment_method: subscription.payment_method || 'manual',
+                payment_status: 'pending',
+                currency: (newPlan.currency?.code || newPlan.currency || 'INR').toString().toUpperCase(),
+                taxes: newPlan.taxes || [],
+                features: newPlan.features,
+                enabled_features: newPlan.enabled_features,
+                auto_renew: false,
+                manual_payment_type: subscription.manual_payment_type || 'cash',
+                bank_account_no: subscription.bank_account_no,
+                bank_name: subscription.bank_name,
+                bank_holder_name: subscription.bank_holder_name,
+                bank_swift_code: subscription.bank_swift_code,
+                bank_routing_number: subscription.bank_routing_number,
+                bank_ifsc_no: subscription.bank_ifsc_no
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'New plan change request created. Your subscription will be changed after admin approval.',
+                data: {
+                    subscription: newSubscription,
                     new_plan_id: newPlan._id,
                     new_plan_name: newPlan.name
                 }
@@ -1896,7 +2006,15 @@ export const overrideSubscriptionLimits = async (req, res) => {
             const booleanFeatures = [
                 'rest_api', 'whatsapp_webhook', 'auto_replies',
                 'analytics',
-                'priority_support'
+                'priority_support',
+                'omnichannel_facebook',
+                'omnichannel_instagram',
+                'omnichannel_telegram',
+                'omnichannel_twitter',
+                'fb_chat', 'fb_automation', 'fb_campaign', 'fb_template', 'fb_keyword', 'fb_comment_dm', 'fb_retrigger',
+                'ig_chat', 'ig_automation', 'ig_campaign', 'ig_template', 'ig_keyword', 'ig_comment_dm', 'ig_retrigger',
+                'tg_chat', 'tg_automation', 'tg_campaign', 'tg_template', 'tg_keyword',
+                'tw_chat', 'tw_automation', 'tw_campaign', 'tw_template', 'tw_keyword'
             ];
 
             for (const feature of booleanFeatures) {

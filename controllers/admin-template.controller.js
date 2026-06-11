@@ -69,7 +69,7 @@ const parseSortParams = (query) => {
 
 export const createAdminTemplate = async (req, res) => {
   try {
-    const { template_name, language = "en_US", category, message_body, footer_text, buttons, variable_examples, variables_example, add_security_recommendation, code_expiration_minutes, otp_code_length, otp_buttons, call_permission, is_limited_time_offer, offer_text, has_expiration, template_type, carousel_cards, sector, template_category, header_text } = req.body;
+    const { template_name, language = "en_US", category, message_body, footer_text, buttons, variable_examples, variables_example, add_security_recommendation, code_expiration_minutes, otp_code_length, otp_buttons, call_permission, is_limited_time_offer, offer_text, has_expiration, template_type, carousel_cards, sector, template_category, header_text, platform = "whatsapp" } = req.body;
     console.log("template_name", template_name);
     if (!template_name || !category) {
       return res.status(400).json({
@@ -354,7 +354,8 @@ export const createAdminTemplate = async (req, res) => {
       template_type: finalTemplateType,
       carousel_cards: parsedCarouselCards.length > 0 ? parsedCarouselCards : undefined,
       authentication_options: authentication_options || undefined,
-      status: "draft",
+      status: platform === "whatsapp" ? "draft" : "approved",
+      platform: platform,
     });
 
     return res.status(201).json({
@@ -375,12 +376,16 @@ export const getAllAdminTemplates = async (req, res) => {
   try {
     const { page, limit, skip } = parsePaginationParams(req.query);
     const { sortField, sortOrder } = parseSortParams(req.query);
-    const { sector, template_category, category, search, status } = req.query;
+    const { sector, template_category, category, search, status, platform = "whatsapp" } = req.query;
 
     const filter = {
       is_admin_template: true,
       deleted_at: null,
     };
+
+    if (platform !== "all") {
+      filter.platform = platform;
+    }
 
     if (sector) {
       filter.sector = sector;

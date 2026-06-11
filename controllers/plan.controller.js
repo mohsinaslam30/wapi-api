@@ -28,7 +28,6 @@ const _syncPlanInternal = async (plan, force = false) => {
         return false;
     }
 
-    // Ensure currency and taxes are populated for price calculation
     if (!plan.populated('currency') || !plan.populated('taxes')) {
         await plan.populate(['currency', 'taxes']);
     }
@@ -50,7 +49,6 @@ const _syncPlanInternal = async (plan, force = false) => {
     const setting = await Setting.findOne().lean();
     let updated = false;
 
-    // Sync with Stripe
     if (setting?.is_stripe_active && (force || !plan.stripe_product_id || !plan.stripe_payment_link_url)) {
         try {
             console.log(`[SyncPlans] Syncing ${plan.slug} with Stripe...`);
@@ -74,7 +72,6 @@ const _syncPlanInternal = async (plan, force = false) => {
         }
     }
 
-    // Sync with Razorpay
     if (setting?.is_razorpay_active && (force || !plan.razorpay_plan_id)) {
         try {
             console.log(`[SyncPlans] Syncing ${plan.slug} with Razorpay...`);
@@ -89,7 +86,6 @@ const _syncPlanInternal = async (plan, force = false) => {
         }
     }
 
-    // Sync with PayPal
     if (setting?.is_paypal_active && (force || !plan.paypal_plan_id)) {
         try {
             console.log(`[SyncPlans] Syncing ${plan.slug} with PayPal...`);
@@ -214,7 +210,15 @@ const validatePlanData = (data) => {
 
         const booleanFeatures = [
             'rest_api', 'whatsapp_webhook', 'auto_replies',
-            'analytics', 'priority_support'
+            'analytics', 'priority_support',
+            'omnichannel_facebook',
+            'fb_chat', 'fb_automation', 'fb_campaign', 'fb_template', 'fb_keyword', 'fb_comment_dm', 'fb_retrigger',
+            'omnichannel_instagram',
+            'ig_chat', 'ig_automation', 'ig_campaign', 'ig_template', 'ig_keyword', 'ig_comment_dm', 'ig_retrigger',
+            'omnichannel_telegram',
+            'tg_chat', 'tg_automation', 'tg_campaign', 'tg_template', 'tg_keyword',
+            'omnichannel_twitter',
+            'tw_chat', 'tw_automation', 'tw_campaign', 'tw_template', 'tw_keyword'
         ];
 
         booleanFeatures.forEach(feature => {
@@ -501,6 +505,7 @@ export const updatePlan = async (req, res) => {
         const billingCycleChanged = planData.billing_cycle !== existingPlan.billing_cycle;
         let stripePricingChanged = priceChanged || currencyChanged || billingCycleChanged;
         let razorpayPricingChanged = priceChanged || currencyChanged || billingCycleChanged;
+        let paypalPricingChanged = priceChanged || currencyChanged || billingCycleChanged;
 
         existingPlan.name = planData.name.trim();
         existingPlan.slug = slug;

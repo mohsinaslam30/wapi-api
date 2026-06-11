@@ -35,6 +35,12 @@ const teamSchema = new mongoose.Schema(
       type: Date,
       default: null,
       index: true
+    },
+
+    round_robin_last_agent_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
     }
   },
   {

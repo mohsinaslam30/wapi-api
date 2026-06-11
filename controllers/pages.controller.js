@@ -35,13 +35,15 @@ const parseSortParams = (query) => {
     return { sortField, sortOrder };
 };
 
-const validatePageData = (pageData) => {
+const validatePageData = (pageData, currentSlug = '') => {
     const errors = [];
     if (!pageData.title || !pageData.title.trim()) {
         errors.push('Title is required');
     }
 
-    if (!pageData.content || !pageData.content.trim()) {
+    const slug = pageData.slug || currentSlug;
+    const isDynamic = ['instagram', 'whatsapp', 'telegram', 'facebook', 'ai_calling', 'appointment_booking', 'broadcast_bulk_messages', 'catalog', 'product-catalog', 'whatsapp_forms', 'automation_builder', 'ctwa', 'shared_team_inbox'].includes(slug);
+    if (!isDynamic && (!pageData.content || !pageData.content.trim())) {
         errors.push('Content is required');
     }
     return {
@@ -107,7 +109,7 @@ export const createPage = async (req, res) => {
             });
         }
 
-        const { title, content, meta_title, meta_description, status, sort_order } = pageData;
+        const { title, content, dynamic_content, color_config, meta_title, meta_description, status, sort_order } = pageData;
 
         const slug = pageData.slug || generateSlug(title);
 
@@ -128,7 +130,9 @@ export const createPage = async (req, res) => {
         const page = await Page.create({
             title: title.trim(),
             slug: slug,
-            content,
+            content: content || '',
+            dynamic_content: dynamic_content ? (typeof dynamic_content === 'string' ? JSON.parse(dynamic_content) : dynamic_content) : null,
+            color_config: color_config ? (typeof color_config === 'string' ? JSON.parse(color_config) : color_config) : null,
             meta_title: meta_title ? meta_title.trim() : null,
             meta_description: meta_description ? meta_description.trim() : null,
             meta_image,
@@ -234,7 +238,7 @@ export const updatePage = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Page not found' });
         }
 
-        const validation = validatePageData(updateData);
+        const validation = validatePageData(updateData, page.slug);
         if (!validation.isValid) {
             await cleanupFiles(req.files);
             return res.status(400).json({
@@ -246,18 +250,20 @@ export const updatePage = async (req, res) => {
 
         console.log("update data title", updateData.title);
 
-
-        const newSlug = generateSlug(updateData.title);
-        if (newSlug !== page.slug) {
-            const existingPage = await Page.findOne({ slug: createCaseInsensitivePattern(newSlug), _id: { $ne: id }, deleted_at: null });
-            if (existingPage) {
-                await cleanupFiles(req.files);
-                return res.status(409).json({
-                    success: false,
-                    message: 'A page with this slug already exists'
-                });
+        const isReserved = ['instagram', 'whatsapp', 'telegram', 'facebook', 'ai_calling', 'appointment_booking', 'broadcast_bulk_messages', 'catalog', 'product-catalog', 'whatsapp_forms', 'automation_builder', 'ctwa', 'shared_team_inbox'].includes(page.slug);
+        if (!isReserved) {
+            const newSlug = generateSlug(updateData.title);
+            if (newSlug !== page.slug) {
+                const existingPage = await Page.findOne({ slug: createCaseInsensitivePattern(newSlug), _id: { $ne: id }, deleted_at: null });
+                if (existingPage) {
+                    await cleanupFiles(req.files);
+                    return res.status(409).json({
+                        success: false,
+                        message: 'A page with this slug already exists'
+                    });
+                }
+                page.slug = newSlug;
             }
-            page.slug = newSlug;
         }
 
         const oldMetaImage = page.meta_image;
@@ -268,6 +274,16 @@ export const updatePage = async (req, res) => {
 
         if (updateData.title !== undefined) page.title = updateData.title.trim();
         if (updateData.content !== undefined) page.content = updateData.content;
+        if (updateData.dynamic_content !== undefined) {
+            page.dynamic_content = typeof updateData.dynamic_content === 'string' 
+                ? JSON.parse(updateData.dynamic_content) 
+                : updateData.dynamic_content;
+        }
+        if (updateData.color_config !== undefined) {
+            page.color_config = typeof updateData.color_config === 'string' 
+                ? JSON.parse(updateData.color_config) 
+                : updateData.color_config;
+        }
         if (updateData.meta_title !== undefined) page.meta_title = updateData.meta_title.trim();
         if (updateData.meta_description !== undefined) page.meta_description = updateData.meta_description.trim();
         if (updateData.status !== undefined) page.status = updateData.status;
@@ -370,11 +386,62 @@ export const togglePageStatus = async (req, res) => {
     }
 };
 
+export const uploadPageMedia = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                message: 'No file provided'
+            });
+        }
+
+        let fileUrl = req.file.path;
+        if (!fileUrl.startsWith('http') && !fileUrl.startsWith('/')) {
+            fileUrl = '/' + fileUrl;
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: 'File uploaded successfully',
+            fileUrl: fileUrl
+        });
+    } catch (error) {
+        console.error('Error uploading page media:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to upload file',
+            error: error.message
+        });
+    }
+};
+
+export const getPagesForSitemap = async (req, res) => {
+    try {
+        const pages = await Page.find({ status: true, deleted_at: null }, 'slug updated_at').lean();
+        return res.status(200).json({
+            success: true,
+            pages: pages.map(p => ({
+                slug: p.slug,
+                updatedAt: p.updated_at
+            }))
+        });
+    } catch (error) {
+        console.error('Error fetching pages for sitemap:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to fetch pages for sitemap',
+            error: error.message
+        });
+    }
+};
+
 export default {
     createPage,
     getPages,
     getPageById,
     updatePage,
     deletePages,
-    togglePageStatus
+    togglePageStatus,
+    uploadPageMedia,
+    getPagesForSitemap
 };

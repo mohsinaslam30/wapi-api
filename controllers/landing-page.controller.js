@@ -251,6 +251,7 @@ const updateLandingPage = async (req, res) => {
       faq_section,
       contact_section,
       footer_section,
+      header_section,
       landing_page_enabled
     } = req.body;
 
@@ -319,6 +320,10 @@ const updateLandingPage = async (req, res) => {
 
     if (footer_section) {
       updateData.footer_section = footer_section;
+    }
+
+    if (header_section) {
+      updateData.header_section = header_section;
     }
 
     let landingPage = await LandingPage.findOne();

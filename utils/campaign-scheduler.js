@@ -54,11 +54,7 @@ class CampaignScheduler {
         try {
           console.log(`Processing scheduled campaign: ${campaign.name} (${campaign._id})`);
 
-          campaign.status = 'sending';
-          campaign.sent_at = new Date();
-          await campaign.save();
-
-          processCampaignInBackground(campaign);
+          processCampaignInBackground(campaign._id);
 
         } catch (error) {
           console.error(`Error processing scheduled campaign ${campaign._id}:`, error);

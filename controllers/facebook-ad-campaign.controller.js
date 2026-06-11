@@ -495,7 +495,7 @@ export const syncFacebookAdAccounts = async (req, res) => {
   try {
     const userId = getOwnerId(req.user);
     const connection = await requireConnection(userId);
-    const { long_lived_access_token: token } = connection;
+    const token = connection.long_lived_access_token;
 
     let allAccounts = [];
     let url = `${BASE}/me/adaccounts?fields=id,name,account_id,currency,account_status,funding_source_details,is_prepay_account,balance&limit=100&access_token=${token}`;
@@ -632,7 +632,6 @@ export const createFbAdCampaign = async (req, res) => {
       access_token: token
     };
 
-    // If CBO is true but no campaign budget is provided, we must treat it as Ad Set budget
     if (is_cbo && !daily_budget && !lifetime_budget) {
       is_cbo = false;
     }
@@ -642,7 +641,6 @@ export const createFbAdCampaign = async (req, res) => {
       if (lifetime_budget) campaignMetaParams.lifetime_budget = String(Math.round(Number(lifetime_budget) * 100));
       campaignMetaParams.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
     } else {
-      // If no campaign budget is provided, we must explicitly set this for Meta v20+
       campaignMetaParams.is_adset_budget_sharing_enabled = 'false';
     }
 
@@ -1437,12 +1435,11 @@ export const createFbAd = async (req, res) => {
     if (carousel_cards && Array.isArray(carousel_cards)) {
       const pluralFiles = files.carousel_images || [];
       let pluralIdx = 0;
-      
+
       for (let i = 0; i < carousel_cards.length; i++) {
         const fileKey = `carousel_image_${i}`;
         let cardFile = files[fileKey] ? files[fileKey][0] : null;
 
-        // If not found in individual keys, check the plural array if card needs a file
         if (!cardFile && (carousel_cards[i]._has_local_file || !carousel_cards[i].image_hash) && pluralFiles[pluralIdx]) {
           cardFile = pluralFiles[pluralIdx];
           pluralIdx++;

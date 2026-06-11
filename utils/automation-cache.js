@@ -101,9 +101,11 @@ class AutomationCache {
         if (flow && Array.isArray(flow.triggers)) {
           flow.triggers.forEach(trigger => {
             if (trigger) {
+              const plainTrigger = trigger.toObject ? trigger.toObject() : trigger;
               triggers.push({
-                ...trigger,
-                flow_id: flow._id
+                ...plainTrigger,
+                flow_id: flow._id,
+                workspace_id: flow.workspace_id ? flow.workspace_id.toString() : null
               });
             }
           });
@@ -151,7 +153,8 @@ class AutomationCache {
             const plainTrigger = trigger.toObject ? trigger.toObject() : trigger;
             triggers.push({
               ...plainTrigger,
-              flow_id: flow._id
+              flow_id: flow._id,
+              workspace_id: flow.workspace_id ? flow.workspace_id.toString() : null
             });
           }
         });

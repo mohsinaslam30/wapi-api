@@ -651,27 +651,27 @@ export const triggerWebhook = async (req, res) => {
     const userId = webhook.user_id._id;
     const template = webhook.template_id;
 
-    let contact = await Contact.findOne({
-      phone_number: formattedPhone,
-      created_by: userId,
-      deleted_at: null
-    });
+    const contactName =
+      Webhook.getNestedValue(payload, "customer.name") ||
+      Webhook.getNestedValue(payload, "customer.first_name") ||
+      Webhook.getNestedValue(payload, "name") ||
+      "Webhook Contact";
 
-    if (!contact) {
-      const contactName =
-        Webhook.getNestedValue(payload, "customer.name") ||
-        Webhook.getNestedValue(payload, "customer.first_name") ||
-        Webhook.getNestedValue(payload, "name") ||
-        "Webhook Contact";
-      contact = await Contact.create({
-        phone_number: formattedPhone,
-        name: String(contactName || "Webhook Contact"),
-        source: "whatsapp",
-        user_id: userId,
-        created_by: userId,
-        status: "lead"
-      });
-    }
+    let contact = await Contact.findOneAndUpdate(
+      { phone_number: formattedPhone, created_by: userId },
+      {
+        $setOnInsert: {
+          phone_number: formattedPhone,
+          name: String(contactName),
+          source: "whatsapp",
+          user_id: userId,
+          created_by: userId,
+          status: "lead"
+        },
+        $set: { deleted_at: null }
+      },
+      { new: true, upsert: true }
+    ).lean();
 
     const wabaId = template.waba_id;
     if (!wabaId) {

@@ -6,10 +6,8 @@ import { uploadSingle } from '../utils/upload.js';
 
 const router = express.Router();
 
-// Public/Tenant Routes
 router.get('/public', authenticate, checkPermission('view.guide'), guideController.getGuides);
 
-// Admin Routes
 router.get('/', authenticate, checkPermission('view.guide'), guideController.getAllGuides);
 router.get('/categories', authenticate, checkPermission('view.guide'), guideController.getUniqueCategories);
 router.get('/:id', authenticate, checkPermission('view.guide'), guideController.getGuideById);

@@ -1,17 +1,18 @@
-import makeWASocket, {
+import {
+    makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
     delay,
     downloadContentFromMessage
-} from '@whiskeysockets/baileys';
+} from 'baileys-pro';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import BaseProvider from './base.provider.js';
-import { WhatsappWaba, Message, Contact, WhatsappPhoneNumber, WabaConfiguration } from '../../../models/index.js';
+import { WhatsappWaba, Message, Contact, WhatsappPhoneNumber, WabaConfiguration, Template, Submission, EcommerceProduct } from '../../../models/index.js';
 import pino from 'pino';
 import automationEngine from '../../../utils/automation-engine.js';
 import { updateWhatsAppStatus } from '../../../utils/message-status.service.js';
@@ -26,6 +27,8 @@ import {
 const logger = pino({ level: 'silent' });
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const recentlySentMessageIds = new Set();
 
 export default class BaileysProvider extends BaseProvider {
     constructor() {
@@ -76,232 +79,259 @@ export default class BaileysProvider extends BaseProvider {
 
         try {
             if (!fs.existsSync(sessionDir)) {
-            fs.mkdirSync(sessionDir, { recursive: true });
-        }
-
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-
-        const syncChat = connectionData.sync_chat;
-
-        const sock = makeWASocket({
-            version,
-            printQRInTerminal: false,
-            syncFullHistory: syncChat,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, logger)
-            },
-            logger,
-            getMessage: async (key) => {
-                return { conversation: 'Hello' };
+                fs.mkdirSync(sessionDir, { recursive: true });
             }
-        });
 
-        this.sockets.set(wabaId.toString(), sock);
+            const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+            const { version, isLatest } = await fetchLatestBaileysVersion();
 
-        sock.ev.on('creds.update', saveCreds);
+            const syncChat = connectionData.sync_chat;
 
-        sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update;
+            const sock = makeWASocket({
+                version,
+                printQRInTerminal: false,
+                syncFullHistory: syncChat,
+                auth: {
+                    creds: state.creds,
+                    keys: makeCacheableSignalKeyStore(state.keys, logger)
+                },
+                logger,
+                getMessage: async (key) => {
+                    return { conversation: 'Hello' };
+                }
+            });
 
-            if (qr) {
+            this.sockets.set(wabaId.toString(), sock);
 
-                const waba = await WhatsappWaba.findById(wabaId);
+            sock.ev.on('creds.update', saveCreds);
 
-                if (waba?.connection_status === 'connected') {
+            sock.ev.on('connection.update', async (update) => {
+                const { connection, lastDisconnect, qr } = update;
 
-                    console.log(`Session invalidated for WABA ${wabaId} (was connected). QR required to re-authenticate.`);
-                } else if (waba && waba.connection_status !== 'qrcode') {
-                    console.log(`New QR generated for WABA ${wabaId}`);
+                if (qr) {
+
+                    const waba = await WhatsappWaba.findById(wabaId);
+
+                    if (waba?.connection_status === 'connected') {
+
+                        console.log(`Session invalidated for WABA ${wabaId} (was connected). QR required to re-authenticate.`);
+                    } else if (waba && waba.connection_status !== 'qrcode') {
+                        console.log(`New QR generated for WABA ${wabaId}`);
+                    }
+
+                    const qrBase64 = await QRCode.toDataURL(qr);
+                    await WhatsappWaba.findByIdAndUpdate(wabaId, {
+                        qr_code: qrBase64,
+                        connection_status: 'qrcode'
+                    });
+
+                    this.emitStatus(wabaId, 'qrcode', { qr_code: qrBase64, session_expired: waba?.connection_status === 'connected' });
                 }
 
-                const qrBase64 = await QRCode.toDataURL(qr);
-                await WhatsappWaba.findByIdAndUpdate(wabaId, {
-                    qr_code: qrBase64,
-                    connection_status: 'qrcode'
-                });
+                if (connection === 'close') {
+                    const errorCode = (lastDisconnect.error)?.output?.statusCode;
+                    const errorMessage = (lastDisconnect.error)?.message || (lastDisconnect.error)?.toString();
+                    const isQRTimeout = errorCode === 408 || errorMessage?.includes('QR refs attempts ended');
+                    const shouldReconnect = errorCode !== DisconnectReason.loggedOut && !isQRTimeout;
 
-                this.emitStatus(wabaId, 'qrcode', { qr_code: qrBase64, session_expired: waba?.connection_status === 'connected' });
-            }
+                    console.log(`Connection closed for WABA ${wabaId}. Error: ${errorMessage} (Code: ${errorCode}), reconnecting: ${shouldReconnect}`);
 
-            if (connection === 'close') {
-                const errorCode = (lastDisconnect.error)?.output?.statusCode;
-                const errorMessage = (lastDisconnect.error)?.message || (lastDisconnect.error)?.toString();
-                const isQRTimeout = errorCode === 408 || errorMessage?.includes('QR refs attempts ended');
-                const shouldReconnect = errorCode !== DisconnectReason.loggedOut && !isQRTimeout;
+                    this.sockets.delete(wabaId.toString());
 
-                console.log(`Connection closed for WABA ${wabaId}. Error: ${errorMessage} (Code: ${errorCode}), reconnecting: ${shouldReconnect}`);
+                    if (shouldReconnect) {
+                        await delay(5000);
 
-                this.sockets.delete(wabaId.toString());
-
-                if (shouldReconnect) {
-                    await delay(5000);
-
-                    const freshData = await WhatsappWaba.findById(wabaId).lean();
-                    await this.initializeConnection(userId, {
-                        ...(freshData || connectionData),
-                        sync_chat: connectionData.sync_chat
-                    });
-                } else {
-                    if (isQRTimeout) {
-                        console.log(`QR timeout for WABA ${wabaId}. Breaking loop.`);
+                        const freshData = await WhatsappWaba.findById(wabaId).lean();
+                        await this.initializeConnection(userId, {
+                            ...(freshData || connectionData),
+                            sync_chat: connectionData.sync_chat
+                        });
                     } else {
-                        console.log(`Baileys logged out for WABA ${wabaId}. Cleaning up session and chat history...`);
-                        try {
-                            const phoneDoc = await WhatsappPhoneNumber.findOne({ waba_id: wabaId }).lean();
-                            if (phoneDoc?._id) {
+                        if (isQRTimeout) {
+                            console.log(`QR timeout for WABA ${wabaId}. Breaking loop.`);
+                        } else {
+                            console.log(`Baileys logged out for WABA ${wabaId}. Cleaning up session and chat history...`);
+                            try {
+                                const phoneDoc = await WhatsappPhoneNumber.findOne({ waba_id: wabaId }).lean();
+                                if (phoneDoc?._id) {
 
-                                const { deletedCount } = await Message.deleteMany({
-                                    user_id: userId,
-                                    whatsapp_phone_number_id: phoneDoc._id
-                                });
-                                console.log(`Deleted ${deletedCount} messages for phone ${phoneDoc.display_phone_number} (WABA ${wabaId}) on logout.`);
+                                    const { deletedCount } = await Message.deleteMany({
+                                        user_id: userId,
+                                        whatsapp_phone_number_id: phoneDoc._id
+                                    });
+                                    console.log(`Deleted ${deletedCount} messages for phone ${phoneDoc.display_phone_number} (WABA ${wabaId}) on logout.`);
+                                }
+                            } catch (delErr) {
+                                console.error(`Error deleting messages on logout for WABA ${wabaId}:`, delErr.message);
                             }
-                        } catch (delErr) {
-                            console.error(`Error deleting messages on logout for WABA ${wabaId}:`, delErr.message);
+                        }
+
+                        await WhatsappWaba.findByIdAndUpdate(wabaId, {
+                            connection_status: 'disconnected',
+                            qr_code: null
+                        });
+
+                        if (fs.existsSync(sessionDir)) {
+                            try {
+                                fs.rmSync(sessionDir, { recursive: true, force: true });
+                                console.log(`Deleted session directory: ${sessionDir}`);
+                            } catch (err) {
+                                console.error(`Error deleting session directory: ${err.message}`);
+                            }
+                        }
+
+                        this.emitStatus(wabaId, isQRTimeout ? 'qr_timeout' : 'disconnected', {
+                            message: errorMessage,
+                            code: errorCode
+                        });
+
+
+                        if (!isQRTimeout) {
+                            const checkWaba = await WhatsappWaba.findById(wabaId).lean();
+                            if (checkWaba && !checkWaba.deleted_at) {
+                                console.log(`Regenerating QR code for WABA ${wabaId} after disconnect...`);
+                                setTimeout(() => {
+                                    this.initializeConnection(userId, connectionData).catch(err => {
+                                        console.error(`Failed to regenerate QR code for WABA ${wabaId}:`, err);
+                                    });
+                                }, 5000);
+                            } else {
+                                console.log(`Skipping QR regeneration for WABA ${wabaId} as it is marked for deletion.`);
+                            }
                         }
                     }
+                } else if (connection === 'open') {
+                    console.log(`Baileys connection opened for WABA ${wabaId}`);
+                    const userJid = sock.user.id;
+                    const phoneNumber = userJid.split(':')[0].split('@')[0];
 
                     await WhatsappWaba.findByIdAndUpdate(wabaId, {
-                        connection_status: 'disconnected',
-                        qr_code: null
+                        connection_status: 'connected',
+                        qr_code: null,
                     });
 
-                    if (fs.existsSync(sessionDir)) {
-                        try {
-                            fs.rmSync(sessionDir, { recursive: true, force: true });
-                            console.log(`Deleted session directory: ${sessionDir}`);
-                        } catch (err) {
-                            console.error(`Error deleting session directory: ${err.message}`);
-                        }
-                    }
+                    this.emitStatus(wabaId, 'connected', { phone_number: phoneNumber });
 
-                    this.emitStatus(wabaId, isQRTimeout ? 'qr_timeout' : 'disconnected', {
-                        message: errorMessage,
-                        code: errorCode
-                    });
-
-
-                    if (!isQRTimeout) {
-                        const checkWaba = await WhatsappWaba.findById(wabaId).lean();
-                        if (checkWaba && !checkWaba.deleted_at) {
-                            console.log(`Regenerating QR code for WABA ${wabaId} after disconnect...`);
-                            setTimeout(() => {
-                                this.initializeConnection(userId, connectionData).catch(err => {
-                                    console.error(`Failed to regenerate QR code for WABA ${wabaId}:`, err);
-                                });
-                            }, 5000);
-                        } else {
-                            console.log(`Skipping QR regeneration for WABA ${wabaId} as it is marked for deletion.`);
-                        }
-                    }
-                }
-            } else if (connection === 'open') {
-                console.log(`Baileys connection opened for WABA ${wabaId}`);
-                const userJid = sock.user.id;
-                const phoneNumber = userJid.split(':')[0].split('@')[0];
-
-                await WhatsappWaba.findByIdAndUpdate(wabaId, {
-                    connection_status: 'connected',
-                    qr_code: null,
-                });
-
-                this.emitStatus(wabaId, 'connected', { phone_number: phoneNumber });
-
-                let phone = await WhatsappPhoneNumber.findOne({ waba_id: wabaId });
-                if (!phone) {
-                    await WhatsappPhoneNumber.create({
-                        user_id: userId,
-                        waba_id: wabaId,
-                        phone_number_id: userJid,
-                        display_phone_number: phoneNumber,
-                        is_active: true
-                    });
-                }
-            }
-        });
-
-        sock.ev.on('messages.upsert', async (m) => {
-            if (m.type === 'append' || m.type === 'notify') {
-                for (const msg of m.messages) {
-                    await this.handleIncomingMessage(userId, wabaId, msg);
-                }
-            }
-        });
-
-        sock.ev.on('message-receipt.update', async (updates) => {
-            for (const receipt of updates) {
-                const waMessageId = receipt.key.id;
-                console.log("receipt.receiptType", receipt.receiptType)
-                const status = receipt.receiptType === 'read' ? 'read' : (receipt.receiptType === 'delivered' ? 'delivered' : null);
-
-                if (!status) continue;
-
-                console.log(`Baileys receipt: ${waMessageId} -> ${status}`);
-                try {
-                    const timestamp = new Date();
-                    const updatedMessage = await updateWhatsAppStatus(waMessageId, status, timestamp);
-
-                    if (updatedMessage) {
-                        await automationEngine.triggerEvent("status_update", {
-                            waMessageId: waMessageId,
-                            status: status,
-                            timestamp: timestamp,
-                            recipientId: receipt.key.remoteJid,
-                            messageId: updatedMessage._id.toString(),
-                            userId: updatedMessage.user_id?.toString()
+                    let phone = await WhatsappPhoneNumber.findOne({ waba_id: wabaId });
+                    if (!phone) {
+                        const phoneCount = await WhatsappPhoneNumber.countDocuments({ user_id: userId, deleted_at: null });
+                        await WhatsappPhoneNumber.create({
+                            user_id: userId,
+                            waba_id: wabaId,
+                            phone_number_id: userJid,
+                            display_phone_number: phoneNumber,
+                            is_active: true,
+                            is_primary: phoneCount === 0
                         });
                     }
-                } catch (err) { }
-            }
-        });
+                }
+            });
 
-        sock.ev.on('messages.update', async (updates) => {
-            for (const update of updates) {
-                if (update.update.status) {
-                    const waMessageId = update.key.id;
-                    let status = null;
-                    console.log("update.update.status", update.update.status)
-
-                    if (update.update.status === 2) status = 'sent';
-                    else if (update.update.status === 3) status = 'delivered';
-                    else if (update.update.status === 4) status = 'read';
-
-                    if (status) {
-                        console.log(`Baileys status update: ${waMessageId} -> ${status}`);
-                        try {
-                            const timestamp = new Date();
-                            const updatedMessage = await updateWhatsAppStatus(waMessageId, status, timestamp);
-                            if (updatedMessage) {
-                                await automationEngine.triggerEvent("status_update", {
-                                    waMessageId: waMessageId,
-                                    status: status,
-                                    timestamp: timestamp,
-                                    recipientId: update.key.remoteJid,
-                                    messageId: updatedMessage._id.toString(),
-                                    userId: updatedMessage.user_id?.toString()
-                                });
-                            }
-                        } catch (err) { }
+            sock.ev.on('messages.upsert', async (m) => {
+                console.log(`[Baileys DEBUG] messages.upsert type=${m.type}, count=${m.messages?.length}`);
+                if (m.type === 'append' || m.type === 'notify') {
+                    for (const msg of m.messages) {
+                        const msgKeys = msg.message ? Object.keys(msg.message) : [];
+                        console.log(`[Baileys DEBUG] Raw message: ${JSON.stringify(msg)}`);
+                        await this.handleIncomingMessage(userId, wabaId, msg);
                     }
                 }
-            }
-        });
+            });
 
-        sock.ev.on('messaging-history.set', async (data) => {
-            if (!syncChat) {
-                console.log(`History sync skipped for WABA ${wabaId} (sync_chat=false)`);
-                return;
-            }
-            setTimeout(() => {
-                this.processHistorySync(userId, wabaId, data).catch(err => {
-                    console.error('Background history sync failed:', err);
-                });
-            }, 100);
-        });
+            sock.ev.on('contacts.upsert', (contacts) => {
+                console.log('[Baileys DEBUG] contacts.upsert:', JSON.stringify(contacts));
+            });
 
-        return { success: true };
+            sock.ev.on('contacts.update', (updates) => {
+                console.log('[Baileys DEBUG] contacts.update:', JSON.stringify(updates));
+            });
+
+            sock.ev.on('chats.upsert', (chats) => {
+                console.log('[Baileys DEBUG] chats.upsert:', JSON.stringify(chats));
+            });
+
+            sock.ev.on('chats.update', (updates) => {
+                console.log('[Baileys DEBUG] chats.update:', JSON.stringify(updates));
+            });
+
+            sock.ev.on('lid-mapping.update', (updates) => {
+                console.log('[Baileys DEBUG] lid-mapping.update:', JSON.stringify(updates));
+            });
+
+            sock.ev.on('message-receipt.update', async (updates) => {
+                for (const receipt of updates) {
+                    const waMessageId = receipt.key.id;
+                    console.log("receipt.receiptType", receipt.receiptType)
+                    const status = receipt.receiptType === 'read' ? 'read' : (receipt.receiptType === 'delivered' ? 'delivered' : null);
+
+                    if (!status) continue;
+
+                    console.log(`Baileys receipt: ${waMessageId} -> ${status}`);
+                    try {
+                        const timestamp = new Date();
+                        const updatedMessage = await updateWhatsAppStatus(waMessageId, status, timestamp);
+
+                        if (updatedMessage) {
+                            await automationEngine.triggerEvent("status_update", {
+                                waMessageId: waMessageId,
+                                status: status,
+                                timestamp: timestamp,
+                                recipientId: receipt.key.remoteJid,
+                                messageId: updatedMessage._id.toString(),
+                                userId: updatedMessage.user_id?.toString(),
+                                workspaceId: updatedMessage.workspace_id?.toString()
+                            });
+                        }
+                    } catch (err) { }
+                }
+            });
+
+            sock.ev.on('messages.update', async (updates) => {
+                for (const update of updates) {
+                    if (update.update.status) {
+                        const waMessageId = update.key.id;
+                        let status = null;
+                        console.log("update.update.status", update.update.status)
+
+                        if (update.update.status === 2) status = 'sent';
+                        else if (update.update.status === 3) status = 'delivered';
+                        else if (update.update.status === 4) status = 'read';
+
+                        if (status) {
+                            console.log(`Baileys status update: ${waMessageId} -> ${status}`);
+                            try {
+                                const timestamp = new Date();
+                                const updatedMessage = await updateWhatsAppStatus(waMessageId, status, timestamp);
+                                if (updatedMessage) {
+                                    await automationEngine.triggerEvent("status_update", {
+                                        waMessageId: waMessageId,
+                                        status: status,
+                                        timestamp: timestamp,
+                                        recipientId: update.key.remoteJid,
+                                        messageId: updatedMessage._id.toString(),
+                                        userId: updatedMessage.user_id?.toString(),
+                                        workspaceId: updatedMessage.workspace_id?.toString()
+                                    });
+                                }
+                            } catch (err) { }
+                        }
+                    }
+                }
+            });
+
+            sock.ev.on('messaging-history.set', async (data) => {
+                if (!syncChat) {
+                    console.log(`History sync skipped for WABA ${wabaId} (sync_chat=false)`);
+                    return;
+                }
+                setTimeout(() => {
+                    this.processHistorySync(userId, wabaId, data).catch(err => {
+                        console.error('Background history sync failed:', err);
+                    });
+                }, 100);
+            });
+
+            return { success: true };
         } finally {
             this.initializing.delete(wabaId.toString());
         }
@@ -323,7 +353,7 @@ export default class BaileysProvider extends BaseProvider {
                 return;
             }
 
-            const firstMsgKey = Object.keys(msg.message)[0];
+            const allKeys = Object.keys(msg.message);
             const INTERNAL_MSG_TYPES = [
                 'protocolMessage',
                 'senderKeyDistributionMessage',
@@ -331,21 +361,55 @@ export default class BaileysProvider extends BaseProvider {
                 'appStateSyncKeyRequest',
                 'messageContextInfo',
                 'requestPhoneNumberMessage',
-                'reactionMessage'
+                'deviceListMetadata',
+                'deviceListMetadataVersion'
             ];
-            const isInternalType = INTERNAL_MSG_TYPES.slice(0, -1).includes(firstMsgKey);
-            if (isInternalType) {
+            const realKeys = allKeys.filter(k => !INTERNAL_MSG_TYPES.includes(k));
+            console.log(`[Baileys DEBUG] handleIncomingMessage: allKeys=${JSON.stringify(allKeys)}, realKeys=${JSON.stringify(realKeys)}`);
+            if (realKeys.length === 0) {
+                console.log(`[Baileys DEBUG] Skipping purely internal/metadata message: ${allKeys.join(', ')}`);
                 return;
             }
 
             const senderJid = msg.key.remoteJidAlt || remoteJid;
 
-            if (!senderJid.endsWith('@s.whatsapp.net')) {
+            if (!senderJid.endsWith('@s.whatsapp.net') && !senderJid.endsWith('@lid')) {
+                console.log(`[Baileys DEBUG] Skipping unsupported JID format: ${senderJid}`);
                 return;
             }
 
-            const senderNumber = senderJid.split('@')[0];
+            let senderNumber = senderJid.split('@')[0];
+            if (senderJid.endsWith('@lid')) {
+                const sock = this.sockets.get(wabaId.toString());
+                let resolvedPnJid = null;
+                try {
+                    if (sock?.signalRepository?.lidMapping?.getPNForLID) {
+                        resolvedPnJid = await sock.signalRepository.lidMapping.getPNForLID(senderJid);
+                        console.log(`[Baileys DEBUG] Resolved PN JID from getPNForLID: ${resolvedPnJid}`);
+                    }
+                } catch (err) {
+                    console.error('[Baileys DEBUG] Error calling getPNForLID:', err.message);
+                }
+
+                if (resolvedPnJid && resolvedPnJid.endsWith('@s.whatsapp.net')) {
+                    senderNumber = resolvedPnJid.split('@')[0];
+                } else {
+                    const phoneJid = msg.key.remoteJidAlt || msg.key.participant;
+                    if (phoneJid && phoneJid.endsWith('@s.whatsapp.net')) {
+                        senderNumber = phoneJid.split('@')[0];
+                    } else if (sock?.store?.contacts?.[senderJid]?.id) {
+                        senderNumber = sock.store.contacts[senderJid].id.split('@')[0];
+                    } else if (msg.pushName) {
+                        console.log(`[Baileys DEBUG] Using LID number as sender: ${senderNumber} (pushName: ${msg.pushName})`);
+                    }
+                }
+            }
+
             const fromMe = msg.key.fromMe;
+            if (msg.key.id && recentlySentMessageIds.has(msg.key.id)) {
+                console.log(`[Baileys DEBUG] Skipping recently sent outbound message to avoid race condition duplicate: ${msg.key.id}`);
+                return;
+            }
             const phone = await WhatsappPhoneNumber.findOne({ waba_id: wabaId });
             const myNumber = phone?.display_phone_number;
 
@@ -365,15 +429,35 @@ export default class BaileysProvider extends BaseProvider {
                 return;
             }
 
-            let contact = await Contact.findOne({ phone_number: senderNumber, created_by: userId });
-            if (!contact) {
+            let contact = await Contact.findOne({
+                created_by: userId,
+                $or: [
+                    { phone_number: senderNumber },
+                    { 'metadata.whatsapp_lid': senderNumber }
+                ]
+            });
+
+            if (contact) {
+                if (contact.phone_number !== senderNumber && !senderJid.endsWith('@s.whatsapp.net')) {
+                    console.log(`[Baileys DEBUG] Mapping incoming LID ${senderNumber} to existing contact phone number: ${contact.phone_number}`);
+                    senderNumber = contact.phone_number;
+                }
+
+                if (contact.deleted_at) {
+                    contact.deleted_at = null;
+                    await contact.save();
+                }
+            } else {
+                const isLid = senderJid.endsWith('@lid');
                 contact = await Contact.create({
                     phone_number: senderNumber,
                     name: msg.pushName || senderNumber,
                     user_id: userId,
                     created_by: userId,
-                    source: 'baileys'
+                    source: 'baileys',
+                    metadata: isLid ? { whatsapp_lid: senderNumber } : {}
                 });
+                console.log(`[Baileys DEBUG] Created new contact for ${senderNumber} (isLid: ${isLid})`);
             }
 
             const unwrapped = this.unwrapMessage(msg.message);
@@ -414,9 +498,21 @@ export default class BaileysProvider extends BaseProvider {
                         name: unwrapped.locationMessage?.name,
                         address: unwrapped.locationMessage?.address
                     }
+                } : messageType === 'interactive' ? {
+                    type: unwrapped.buttonsResponseMessage ? 'button_reply' : 'list_reply',
+                    button_reply: unwrapped.buttonsResponseMessage ? {
+                        id: unwrapped.buttonsResponseMessage.selectedButtonId,
+                        title: unwrapped.buttonsResponseMessage.selectedDisplayText
+                    } : undefined,
+                    list_reply: unwrapped.listResponseMessage ? {
+                        id: unwrapped.listResponseMessage.singleSelectReply?.selectedRowId,
+                        title: unwrapped.listResponseMessage.title,
+                        description: unwrapped.listResponseMessage.description
+                    } : undefined
                 } : null,
                 reply_message_id: replyMessageId,
-                reaction_message_id: reactionMessageId
+                reaction_message_id: reactionMessageId,
+                reaction_emoji: messageType === 'reaction' ? content : undefined
             });
 
             if (this.io) {
@@ -447,6 +543,7 @@ export default class BaileysProvider extends BaseProvider {
                         direction: populatedMessage.direction || null,
                         reply_message_id: populatedMessage.reply_message_id || null,
                         reaction_message_id: populatedMessage.reaction_message_id || null,
+                        reaction_emoji: populatedMessage.reaction_emoji || null,
                         sender: {
                             id: populatedMessage.sender_number,
                             name: populatedMessage.sender_number
@@ -489,11 +586,13 @@ export default class BaileysProvider extends BaseProvider {
             if (!fromMe) {
                 try {
                     await automationEngine.triggerEvent("message_received", {
+                        platform: 'baileys',
                         message: content,
                         senderNumber: senderNumber,
                         recipientNumber: myNumber,
                         messageType: messageType,
                         userId: userId.toString(),
+                        workspaceId: phone?.workspace_id?.toString(),
                         whatsappPhoneNumberId: phone?._id?.toString(),
                         waMessageId: msg.key.id,
                         waJid: senderJid,
@@ -532,7 +631,7 @@ export default class BaileysProvider extends BaseProvider {
                     }
 
                     if (!automatedHandled) {
-                        const matchingBot = await findMatchingBot(wabaId, content);
+                        const matchingBot = await findMatchingBot(wabaId, content, 'baileys', contact);
                         if (matchingBot) {
                             await sendAutomatedReply({
                                 wabaId,
@@ -600,7 +699,12 @@ export default class BaileysProvider extends BaseProvider {
 
     getBaileysMessageType(message) {
         if (!message) return 'text';
-        const type = Object.keys(message)[0];
+        const keys = Object.keys(message).filter(k =>
+            k !== 'messageContextInfo' &&
+            k !== 'deviceListMetadata' &&
+            k !== 'deviceListMetadataVersion'
+        );
+        const type = keys[0];
         if (type === 'conversation' || type === 'extendedTextMessage') return 'text';
         if (type === 'imageMessage') return 'image';
         if (type === 'videoMessage') return 'video';
@@ -608,6 +712,8 @@ export default class BaileysProvider extends BaseProvider {
         if (type === 'documentMessage') return 'document';
         if (type === 'locationMessage') return 'location';
         if (type === 'reactionMessage') return 'reaction';
+        if (type === 'buttonsResponseMessage') return 'interactive';
+        if (type === 'listResponseMessage') return 'interactive';
         return 'text';
     }
 
@@ -623,6 +729,19 @@ export default class BaileysProvider extends BaseProvider {
         }
         if (type === 'reaction') {
             return message.reactionMessage?.text || '';
+        }
+        if (type === 'interactive') {
+            if (message.buttonsResponseMessage) {
+                return message.buttonsResponseMessage.selectedDisplayText
+                    || message.buttonsResponseMessage.selectedButtonId
+                    || '';
+            }
+            if (message.listResponseMessage) {
+                return message.listResponseMessage.title
+                    || message.listResponseMessage.singleSelectReply?.selectedRowId
+                    || '';
+            }
+            return '';
         }
         return '';
     }
@@ -644,10 +763,24 @@ export default class BaileysProvider extends BaseProvider {
 
         if (!sock) throw new Error('Baileys socket not initialized');
 
-        const { recipientNumber, messageText, messageType: messageTypeInput, mediaUrl, templateId } = params;
+        const { recipientNumber, messageText, messageType: messageTypeInput, templateId } = params;
+        let mediaUrl = params.mediaUrl;
+        if (mediaUrl && !mediaUrl.startsWith('http')) {
+            if (mediaUrl.startsWith('/uploads') || mediaUrl.startsWith('uploads')) {
+                const relativePath = mediaUrl.startsWith('/') ? mediaUrl.slice(1) : mediaUrl;
+                const absolutePath = path.join(process.cwd(), relativePath);
+                if (fs.existsSync(absolutePath)) {
+                    mediaUrl = absolutePath;
+                }
+            }
+        }
         console.log(`Baileys sending message to ${recipientNumber}: type=${messageTypeInput}, mediaUrl=${mediaUrl}`);
         const messageType = messageTypeInput || (mediaUrl ? this.getMediaTypeFromUrl(mediaUrl) : 'text');
-        const jid = `${recipientNumber}@s.whatsapp.net`;
+        let jid = `${recipientNumber}@s.whatsapp.net`;
+        if (recipientNumber && recipientNumber.length >= 14) {
+            jid = `${recipientNumber}@lid`;
+        }
+        const contact = await Contact.findOne({ phone_number: recipientNumber, created_by: userId });
 
         if (messageTypeInput === 'typing') {
             await sock.sendPresenceUpdate('composing', jid);
@@ -682,6 +815,8 @@ export default class BaileysProvider extends BaseProvider {
         } else if (messageType === 'document') {
             const fileName = this.getFileNameFromUrl(mediaUrl);
             result = await sock.sendMessage(jid, { document: { url: mediaUrl }, fileName: fileName, caption: messageText }, sendOptions);
+        } else if (messageType === 'sticker') {
+            result = await sock.sendMessage(jid, { sticker: { url: mediaUrl } }, sendOptions);
         } else if (messageType === 'location') {
             const { locationParams } = params;
             if (locationParams) {
@@ -705,51 +840,347 @@ export default class BaileysProvider extends BaseProvider {
                     }
                 }
             });
+        } else if (messageType === 'template') {
+            let template = params.templateObj;
+            if (!template && templateId) {
+                template = await Template.findById(templateId).lean();
+            }
+            if (!template && params.templateName) {
+                template = await Template.findOne({ template_name: params.templateName, user_id: userId, deleted_at: null }).lean();
+            }
+            if (!template) {
+                throw new Error(`Template not found for sending: ${templateId || params.templateName}`);
+            }
+
+            let bodyText = template.message_body || '';
+            let headerText = template.header?.text || '';
+            let footerText = template.footer_text || '';
+            let headerMediaUrl = template.header?.media_url || null;
+            let headerMediaType = template.header?.media_type || null;
+
+            const variables = params.templateVariables || {};
+            const components = params.templateComponents || [];
+
+            let bodyParams = [];
+            let headerParams = [];
+            let buttonParamsList = [];
+
+            if (components && Array.isArray(components)) {
+                components.forEach(comp => {
+                    const compType = (comp.type || '').toLowerCase();
+                    const paramsList = comp.parameters || [];
+                    if (compType === 'body') {
+                        bodyParams = paramsList.map(p => p.text);
+                    } else if (compType === 'header') {
+                        headerParams = paramsList.map(p => {
+                            if (p.type === 'text') return p.text;
+                            if (p.type === 'image') return p.image?.link || p.image?.url;
+                            if (p.type === 'video') return p.video?.link || p.video?.url;
+                            if (p.type === 'document') return p.document?.link || p.document?.url;
+                            return '';
+                        });
+                    } else if (compType === 'button') {
+                        buttonParamsList.push({
+                            index: comp.index,
+                            subType: comp.sub_type,
+                            value: paramsList[0]?.text || paramsList[0]?.payload || ''
+                        });
+                    }
+                });
+            }
+
+            if (bodyParams.length === 0 && variables) {
+                if (Array.isArray(variables)) {
+                    bodyParams = variables.map(v => String(v));
+                } else if (typeof variables === 'object') {
+                    const keys = Object.keys(variables).sort((a, b) => {
+                        const na = parseInt(a, 10);
+                        const nb = parseInt(b, 10);
+                        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+                        return a.localeCompare(b);
+                    });
+                    bodyParams = keys.map(k => String(variables[k]));
+                }
+            }
+
+            bodyParams.forEach((val, idx) => {
+                bodyText = bodyText.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'), String(val));
+            });
+
+            headerParams.forEach((val, idx) => {
+                const placeholder = `{{${idx + 1}}}`;
+                if (headerMediaType) {
+                    if (typeof val === 'string' && val.startsWith('http')) {
+                        headerMediaUrl = val;
+                    }
+                } else {
+                    headerText = headerText.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'), String(val));
+                }
+            });
+
+            let interactiveButtons = [];
+            if (template.buttons && Array.isArray(template.buttons)) {
+                template.buttons.forEach((btn, idx) => {
+                    const btnType = (btn.type || '').toLowerCase();
+                    const btnText = btn.text || '';
+                    if (btnType === 'quick_reply') {
+                        interactiveButtons.push({
+                            name: 'quick_reply',
+                            buttonParamsJson: JSON.stringify({
+                                display_text: btnText,
+                                id: btn.id || `btn_${idx}`
+                            })
+                        });
+                    } else if (btnType === 'url' || btnType === 'website') {
+                        let btnUrl = btn.url || btn.website_url || '';
+                        const matchedParam = buttonParamsList.find(bp => String(bp.index) === String(idx));
+                        if (matchedParam) {
+                            btnUrl = btnUrl.replace(/\{\{1\}\}/g, String(matchedParam.value));
+                        } else if (bodyParams.length > 0 && btnUrl.includes('{{')) {
+                            btnUrl = btnUrl.replace(/\{\{1\}\}/g, String(bodyParams[bodyParams.length - 1]));
+                        }
+                        interactiveButtons.push({
+                            name: 'cta_url',
+                            buttonParamsJson: JSON.stringify({
+                                display_text: btnText,
+                                url: btnUrl
+                            })
+                        });
+                    } else if (btnType === 'phone_call') {
+                        let phone = btn.phone_number || '';
+                        if (phone && !phone.startsWith('+')) {
+                            phone = '+' + phone;
+                        }
+                        interactiveButtons.push({
+                            name: 'cta_call',
+                            buttonParamsJson: JSON.stringify({
+                                display_text: btnText,
+                                phone_number: phone
+                            })
+                        });
+                    } else if (btnType === 'copy_code') {
+                        let code = btn.example || btn.text || '';
+                        const matchedParam = buttonParamsList.find(bp => bp.subType === 'copy_code');
+                        if (matchedParam) {
+                            code = matchedParam.value;
+                        }
+                        interactiveButtons.push({
+                            name: 'cta_copy',
+                            buttonParamsJson: JSON.stringify({
+                                display_text: btnText,
+                                id: btn.id || btn.copy_code || `btn_${idx}`,
+                                copy_code: code
+                            })
+                        });
+                    }
+                });
+            }
+
+            if (headerMediaUrl && !headerMediaUrl.startsWith('http')) {
+                if (headerMediaUrl.startsWith('/uploads') || headerMediaUrl.startsWith('uploads')) {
+                    const relativePath = headerMediaUrl.startsWith('/') ? headerMediaUrl.slice(1) : headerMediaUrl;
+                    const absolutePath = path.join(process.cwd(), relativePath);
+                    if (fs.existsSync(absolutePath)) {
+                        headerMediaUrl = absolutePath;
+                    }
+                }
+            }
+
+            const carouselComp = components?.find(comp => comp.type?.toLowerCase() === 'carousel');
+            if (carouselComp) {
+                const templateCards = template.carousel_cards || [];
+
+                const cardPromises = templateCards.map(async (tCard, idx) => {
+                    const resolvedCard = carouselComp.cards?.find(c => c.card_index === idx);
+                    const bodyComp = tCard.components?.find(c => c.type?.toLowerCase() === 'body');
+                    const titleText = bodyComp?.text || '';
+
+                    let mediaUrl = '';
+                    let mediaType = 'image';
+
+                    const paramHeader = resolvedCard?.components?.find(c => c.type?.toLowerCase() === 'header');
+                    const paramMedia = paramHeader?.parameters?.[0];
+                    if (paramMedia) {
+                        mediaType = paramMedia.type || 'image';
+                        mediaUrl = paramMedia[mediaType]?.link || paramMedia[mediaType]?.url || '';
+                    }
+
+                    if (!mediaUrl) {
+                        const staticHeader = tCard.components?.find(c => c.type?.toLowerCase() === 'header');
+                        if (staticHeader) {
+                            mediaUrl = staticHeader.media_url || '';
+                            mediaType = staticHeader.format?.toLowerCase() || 'image';
+                        }
+                    }
+
+                    if (mediaUrl && !mediaUrl.startsWith('http')) {
+                        if (mediaUrl.startsWith('/uploads') || mediaUrl.startsWith('uploads')) {
+                            const relativePath = mediaUrl.startsWith('/') ? mediaUrl.slice(1) : mediaUrl;
+                            const absolutePath = path.join(process.cwd(), relativePath);
+                            if (fs.existsSync(absolutePath)) {
+                                mediaUrl = absolutePath;
+                            }
+                        }
+                    }
+
+                    const cardObj = {
+                        title: '',
+                        caption: titleText
+                    };
+
+                    const cardButtons = [];
+                    const staticButtonComp = tCard.components?.find(c => c.type?.toLowerCase() === 'button');
+                    if (staticButtonComp?.buttons && Array.isArray(staticButtonComp.buttons)) {
+                        staticButtonComp.buttons.forEach((btn, btnIdx) => {
+                            const btnText = btn.text || 'Click here';
+                            const btnType = (btn.type || '').toLowerCase();
+
+                            const paramButton = resolvedCard?.components?.find(
+                                c => c.type?.toLowerCase() === 'button' && String(c.index) === String(btnIdx)
+                            );
+
+                            let btnId = `btn_${idx}_${btnIdx}`;
+                            if (paramButton?.parameters?.[0]) {
+                                const pVal = paramButton.parameters[0].payload || paramButton.parameters[0].text;
+                                if (pVal) btnId = String(pVal);
+                            } else if (btn.url) {
+                                btnId = btn.url;
+                            }
+
+                            if (btnType === 'url') {
+                                cardButtons.push({
+                                    name: 'cta_url',
+                                    buttonParamsJson: JSON.stringify({
+                                        display_text: btnText,
+                                        url: btn.url || btnId,
+                                        merchant_url: btn.url || btnId
+                                    })
+                                });
+                            } else {
+                                cardButtons.push({
+                                    name: 'quick_reply',
+                                    buttonParamsJson: JSON.stringify({
+                                        display_text: btnText,
+                                        id: btnId
+                                    })
+                                });
+                            }
+                        });
+                    }
+
+                    if (cardButtons.length > 0) {
+                        cardObj.buttons = cardButtons;
+                    }
+
+                    if (mediaType === 'video') {
+                        cardObj.video = { url: mediaUrl };
+                    } else {
+                        cardObj.image = { url: mediaUrl };
+                    }
+
+                    return cardObj;
+                });
+
+                const cards = await Promise.all(cardPromises);
+
+                const messagePayload = {
+                    text: bodyText || '',
+                    footer: footerText || undefined,
+                    cards: cards,
+                    viewOnce: true
+                };
+
+                console.log('[Baileys DEBUG] Dispatching Carousel message payload:', JSON.stringify(messagePayload));
+                result = await sock.sendMessage(jid, messagePayload, sendOptions);
+            } else {
+                let messagePayload = {};
+                if (headerMediaUrl && headerMediaType) {
+                    messagePayload = {
+                        [headerMediaType]: { url: headerMediaUrl },
+                        caption: bodyText,
+                        title: headerText || undefined,
+                        footer: footerText || undefined,
+                        media: true
+                    };
+                    if (interactiveButtons.length > 0) {
+                        messagePayload.interactiveButtons = interactiveButtons;
+                    }
+                } else {
+                    if (interactiveButtons.length > 0) {
+                        messagePayload = {
+                            text: bodyText,
+                            title: headerText || undefined,
+                            footer: footerText || undefined,
+                            interactiveButtons: interactiveButtons
+                        };
+                    } else {
+                        let fullText = '';
+                        if (headerText) fullText += `*${headerText}*\n\n`;
+                        fullText += bodyText;
+                        if (footerText) fullText += `\n\n_${footerText}_`;
+                        messagePayload = { text: fullText };
+                    }
+                }
+
+                console.log('[Baileys DEBUG] Dispatching Template message payload:', JSON.stringify(messagePayload));
+                result = await sock.sendMessage(jid, messagePayload, sendOptions);
+            }
         } else if (messageType === 'interactive') {
             const { interactiveType, buttonParams, listParams } = params;
-            
+
             if (interactiveType === 'button') {
                 const buttons = (buttonParams || []).map((btn, i) => ({
                     buttonId: btn.id || `btn_${i}`,
                     buttonText: { displayText: btn.title },
                     type: 1
                 }));
-                
+
                 const buttonMessage = {
                     text: messageText || 'Please select an option',
-                    footer: params.footerText,
+                    footer: params.footerText || '',
                     buttons: buttons,
-                    headerType: 1
+                    headerType: 1,
+                    viewOnce: true
                 };
-                
+
                 if (mediaUrl) {
                     buttonMessage.image = { url: mediaUrl };
                     buttonMessage.headerType = 4;
                 }
-                
+
                 result = await sock.sendMessage(jid, buttonMessage, sendOptions);
             } else if (interactiveType === 'list') {
-                const sections = [
-                    {
-                        title: listParams?.sectionTitle || 'Menu',
-                        rows: (listParams?.items || []).map((item, i) => ({
-                            title: item.title,
-                            rowId: item.id || `item_${i}`,
-                            description: item.description
+                let sections;
+                if (listParams?.sections && Array.isArray(listParams.sections)) {
+                    sections = listParams.sections.map(section => ({
+                        title: section.title || 'Menu',
+                        rows: (section.rows || []).map((row, i) => ({
+                            title: row.title,
+                            rowId: row.rowId || row.id || `row_${i}`,
+                            description: row.description || ''
                         }))
-                    }
-                ];
-                
+                    }));
+                } else {
+                    sections = [
+                        {
+                            title: listParams?.sectionTitle || 'Menu',
+                            rows: (listParams?.items || []).map((item, i) => ({
+                                title: item.title,
+                                rowId: item.id || `item_${i}`,
+                                description: item.description || ''
+                            }))
+                        }
+                    ];
+                }
+
                 const listMessage = {
                     text: messageText || listParams?.body || 'Please select an option',
-                    footer: listParams?.footer,
-                    title: listParams?.header,
+                    footer: listParams?.footer || '',
+                    title: listParams?.header || '',
                     buttonText: listParams?.buttonTitle || 'Select',
                     sections
                 };
-                
-                // Image workaround removed as per user request
-                
+
                 result = await sock.sendMessage(jid, listMessage, sendOptions);
             }
         }
@@ -758,10 +1189,30 @@ export default class BaileysProvider extends BaseProvider {
             throw new Error(`Failed to send message: Unsupported message type "${messageType}" or result undefined`);
         }
 
+        if (result?.key?.id) {
+            recentlySentMessageIds.add(result.key.id);
+            setTimeout(() => recentlySentMessageIds.delete(result.key.id), 5000);
+        }
+
+        if (result?.key?.remoteJid) {
+            console.log(`[Baileys DEBUG] sendMessage JID: ${result.key.remoteJid} (original JID sent: ${jid})`);
+            if (result.key.remoteJid.endsWith('@lid')) {
+                const lidNumber = result.key.remoteJid.split('@')[0];
+                try {
+                    const updateResult = await Contact.updateOne(
+                        { phone_number: recipientNumber, created_by: userId },
+                        { $set: { 'metadata.whatsapp_lid': lidNumber } }
+                    );
+                    console.log(`[Baileys DEBUG] Associated phone_number ${recipientNumber} with whatsapp_lid ${lidNumber}. Modified: ${updateResult.modifiedCount}`);
+                } catch (updateErr) {
+                    console.error('[Baileys DEBUG] Error storing whatsapp_lid in Contact metadata:', updateErr);
+                }
+            }
+        }
+
 
         const phoneRecord = await WhatsappPhoneNumber.findOne({ waba_id: wabaId }).lean();
         const myNumber = phoneRecord?.display_phone_number || connection.display_phone_number || connection.registred_phone_number;
-        const contact = await Contact.findOne({ phone_number: recipientNumber, created_by: userId });
 
         const savedMessage = await Message.create({
             sender_number: myNumber,
@@ -780,6 +1231,10 @@ export default class BaileysProvider extends BaseProvider {
             provider: 'baileys',
             interactive_data: messageType === 'location' ? {
                 location: params.locationParams
+            } : messageType === 'interactive' ? {
+                interactiveType: params.interactiveType,
+                buttons: params.interactiveType === 'button' ? params.buttonParams : undefined,
+                list: params.interactiveType === 'list' ? params.listParams : undefined
             } : null,
             reply_message_id: params.replyMessageId || null,
             reaction_message_id: params.reactionMessageId || null,
@@ -836,6 +1291,8 @@ export default class BaileysProvider extends BaseProvider {
             .sort({ wa_timestamp: -1 })
             .skip(skip)
             .limit(limit)
+            .populate('template_id')
+            .populate('submission_id')
             .populate('user_id', 'name')
             .lean();
 
@@ -1139,7 +1596,8 @@ export default class BaileysProvider extends BaseProvider {
                             wa_timestamp: timestamp,
                             provider: 'baileys',
                             reply_message_id: replyMessageId,
-                            reaction_message_id: reactionMessageId
+                            reaction_message_id: reactionMessageId,
+                            reaction_emoji: messageType === 'reaction' ? content : undefined
                         };
 
                         if (messageType === 'location') {

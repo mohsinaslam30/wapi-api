@@ -67,7 +67,6 @@ const WebhookLogSchema = new mongoose.Schema(
   }
 );
 
-// Index for fast retrieval of latest logs for a specific webhook
 WebhookLogSchema.index({ webhook_id: 1, created_at: -1 });
 WebhookLogSchema.index({ webhook_id: 1, log_type: 1, created_at: -1 });
 

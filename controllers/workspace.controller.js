@@ -1,4 +1,4 @@
-import { Workspace, WhatsappWaba } from '../models/index.js';
+import { Workspace, WhatsappWaba, TelegramConnection, InstagramConnection, FacebookConnection, WhatsappPhoneNumber } from '../models/index.js';
 
 export const createWorkspace = async (req, res) => {
     try {
@@ -41,19 +41,54 @@ export const getWorkspaces = async (req, res) => {
         }).sort({ createdAt: -1 }).lean();
 
 
-        const connectedWabas = await WhatsappWaba.find({
-            user_id: userId,
-            workspace_id: { $in: workspaces.map(ws => ws._id) },
-            deleted_at: null
-        }).lean();
+        const [connectedWabas, telegramConns, instagramConns, facebookConns] = await Promise.all([
+            WhatsappWaba.find({
+                user_id: userId,
+                workspace_id: { $in: workspaces.map(ws => ws._id) },
+                deleted_at: null
+            }).lean(),
+            TelegramConnection.find({
+                user_id: userId,
+                workspace_id: { $in: workspaces.map(ws => ws._id) },
+                is_active: true
+            }).lean(),
+            InstagramConnection.find({
+                user_id: userId,
+                workspace_id: { $in: workspaces.map(ws => ws._id) },
+                is_active: true
+            }).lean(),
+            FacebookConnection.find({
+                user_id: userId,
+                workspace_id: { $in: workspaces.map(ws => ws._id) },
+                is_active: true
+            }).lean()
+        ]);
 
         const result = workspaces.map(ws => {
             const waba = connectedWabas.find(w => w.workspace_id.toString() === ws._id.toString());
+            const telegram = telegramConns.find(t => t.workspace_id.toString() === ws._id.toString());
+            const instagram = instagramConns.find(i => i.workspace_id.toString() === ws._id.toString());
+            const facebook = facebookConns.find(f => f.workspace_id.toString() === ws._id.toString());
+
+            let wabaId = null;
+            let connectionStatus = null;
+            let wabaType = null;
+
+            if (waba) {
+                wabaId = waba._id;
+                connectionStatus = waba.connection_status;
+                wabaType = waba.provider || 'business_api';
+            }
+
             return {
                 ...ws,
-                waba_id: waba?._id || null,
-                connection_status: waba?.connection_status || null,
-                waba_type: waba?.provider || null
+                waba_id: wabaId || null,
+                connection_status: connectionStatus || null,
+                waba_type: wabaType || null,
+                whatsapp_connection_id: waba ? waba._id : null,
+                telegram_connection_id: telegram ? telegram._id : null,
+                instagram_connection_id: instagram ? instagram._id : null,
+                facebook_connection_id: facebook ? facebook._id : null
             };
         });
 

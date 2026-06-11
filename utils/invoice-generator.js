@@ -210,7 +210,7 @@ export const generateInvoicePDF = async (paymentHistory, user, plan) => {
             .font('Helvetica')
             .fontSize(9)
             .text(
-               'Thank you for choosing Wapi for your WhatsApp marketing needs!',
+               'Thank you for choosing us for your WhatsApp marketing needs!',
                50,
                footerY,
                { align: 'center', width: 500 }

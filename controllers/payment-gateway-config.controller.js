@@ -42,7 +42,8 @@ export const createGateway = async (req, res) => {
       credentials,
       is_active: req.body.is_active !== false,
       webhook_id: webhookInfo.webhook_id,
-      webhook_secret: webhookInfo.webhook_secret
+      webhook_secret: webhookInfo.webhook_secret,
+      webhook_url: webhookInfo.webhook_url
     });
 
     const safeConfig = _sanitizeConfig(config.toObject());
@@ -105,6 +106,7 @@ export const updateGateway = async (req, res) => {
           const webhookInfo = await paymentGatewayService.registerWebhook(tempConfig, getWebhookBaseUrl());
           config.webhook_id = webhookInfo.webhook_id;
           config.webhook_secret = webhookInfo.webhook_secret;
+          config.webhook_url = webhookInfo.webhook_url;
         } catch (err) {
           console.warn(`[PaymentGW] Webhook re-registration failed: ${err.message}`);
         }
@@ -185,6 +187,7 @@ export const reregisterWebhook = async (req, res) => {
     const webhookInfo = await paymentGatewayService.registerWebhook(config.toObject(), getWebhookBaseUrl());
     config.webhook_id = webhookInfo.webhook_id;
     config.webhook_secret = webhookInfo.webhook_secret;
+    config.webhook_url = webhookInfo.webhook_url;
     await config.save();
 
     res.json({

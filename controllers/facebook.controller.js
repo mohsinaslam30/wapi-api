@@ -1,15 +1,17 @@
 import mongoose from 'mongoose';
-import { Setting, FacebookConnection, FacebookPage, FacebookAdAccount, WhatsappPhoneNumber } from '../models/index.js';
+import { Setting, FacebookConnection, FacebookPage, FacebookAdAccount, WhatsappPhoneNumber, FacebookLeadForm, FacebookLead } from '../models/index.js';
+import facebookProvider from '../services/messaging/providers/facebook.provider.js';
+import instagramProvider from '../services/messaging/providers/instagram.provider.js';
 import crypto from 'crypto';
 import axios from 'axios';
 
 const FB_API_VERSION = 'v22.0';
 
 
-const fetchAllFacebookPages = async (accessToken, fbUserId, userId) => {
+export const fetchAllFacebookPages = async (accessToken, fbUserId, userId) => {
   let allPages = [];
 
-  let pagesUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/accounts?access_token=${accessToken}&fields=id,name,access_token,category,picture.type(large),is_verified,tasks,business&limit=100`;
+  let pagesUrl = `https://graph.facebook.com/${FB_API_VERSION}/me/accounts?access_token=${accessToken}&fields=id,name,access_token,category,picture.type(large),is_verified,tasks,instagram_business_account{id,username,name}&limit=100`;
   while (pagesUrl) {
     try {
       const response = await axios.get(pagesUrl);
@@ -36,7 +38,7 @@ const fetchAllFacebookPages = async (accessToken, fbUserId, userId) => {
   }
 
   for (const biz of businesses) {
-    let bizPagesUrl = `https://graph.facebook.com/${FB_API_VERSION}/${biz.id}/owned_pages?access_token=${accessToken}&fields=id,name,access_token,category,picture.type(large),is_verified,business&limit=100`;
+    let bizPagesUrl = `https://graph.facebook.com/${FB_API_VERSION}/${biz.id}/owned_pages?access_token=${accessToken}&fields=id,name,access_token,category,picture.type(large),is_verified,business,instagram_business_account{id,username,name}&limit=100`;
     while (bizPagesUrl) {
       try {
         const bizResp = await axios.get(bizPagesUrl);
@@ -82,6 +84,7 @@ const fetchAllFacebookPages = async (accessToken, fbUserId, userId) => {
 export const handleFacebookCallback = async (req, res) => {
   try {
     const { access_token } = req.body;
+    const workspaceId = req.body.workspace_id || req.query.workspace_id || req.headers['x-workspace-id'];
     const userId = req.user.owner_id || req.user.id;
 
     if (!access_token) {
@@ -131,16 +134,21 @@ export const handleFacebookCallback = async (req, res) => {
     });
     const fbUser = meRes.data;
 
+    const hasValidWorkspace = workspaceId && mongoose.Types.ObjectId.isValid(workspaceId);
+    const connQuery = hasValidWorkspace ? { workspace_id: workspaceId } : { workspace_id: null, user_id: userId };
+
     const connection = await FacebookConnection.findOneAndUpdate(
-      { user_id: userId },
+      connQuery,
       {
+        user_id: userId,
+        workspace_id: workspaceId || null,
+        is_active: true,
         fb_user_id: fbUser.id,
         name: fbUser.name,
         email: fbUser.email,
-        long_lived_access_token: accessToken,
-        is_active: true
+        long_lived_access_token: accessToken
       },
-      { upsert: true, returnDocument: 'after' }
+      { upsert: true, new: true }
     );
 
     let pages = [];
@@ -160,58 +168,101 @@ export const handleFacebookCallback = async (req, res) => {
         }
       }
 
-        const validPages = pages.filter(p => !!p.access_token);
-        const skippedCount = pages.length - validPages.length;
-        if (skippedCount > 0) {
-          console.warn(`Skipped ${skippedCount} pages because they were missing access_tokens.`);
+      const validPages = pages.filter(p => !!p.access_token);
+      const skippedCount = pages.length - validPages.length;
+      if (skippedCount > 0) {
+        console.warn(`Skipped ${skippedCount} pages because they were missing access_tokens.`);
+      }
+
+      if (validPages.length > 0) {
+        await FacebookPage.deleteMany({ connection_id: connection._id });
+
+        const pageDocs = validPages.map(p => ({
+          user_id: userId,
+          workspace_id: workspaceId || null,
+          connection_id: connection._id,
+          page_id: p.id,
+          page_name: p.name,
+          page_access_token: p.access_token,
+          category: p.category,
+          picture_url: p.picture?.data?.url,
+          is_meta_verified: p.is_verified || false,
+          business_id: p.business?.id || null,
+          is_whatsapp_connected: !!p.is_whatsapp_connected,
+          is_instagram_connected: !!p.instagram_business_account?.id,
+          instagram_username: p.instagram_business_account?.username || null,
+          instagram_account_id: p.instagram_business_account?.id || null,
+          is_active: true
+        }));
+
+        await FacebookPage.insertMany(pageDocs);
+
+        for (const p of validPages) {
+          try {
+            await facebookProvider.subscribePageToWebhook(p.id, p.access_token);
+            console.log(`[Facebook Callback] Subscribed Page ${p.name} (ID: ${p.id}) to webhooks`);
+          } catch (subErr) {
+            console.error(`[Facebook Callback] Failed to subscribe Page ${p.name} (ID: ${p.id}):`, subErr.message);
+          }
         }
 
-        if (validPages.length > 0) {
-          await FacebookPage.deleteMany({ connection_id: connection._id });
+        const instagramPages = validPages.filter(p => !!p.instagram_business_account?.id);
+        if (instagramPages.length > 0) {
+          for (const p of instagramPages) {
+            try {
+              await instagramProvider.subscribePageToWebhook(p.id, p.access_token);
+              console.log(`[Facebook Callback] Subscribed Instagram linked Page ${p.name} (ID: ${p.id}) to webhooks`);
+            } catch (subErr) {
+              console.error(`[Facebook Callback] Failed to subscribe Instagram Page ${p.name} (ID: ${p.id}):`, subErr.message);
+            }
+          }
+        }
 
-          const pageDocs = validPages.map(p => ({
+        connection.pages = validPages.map(p => ({
+          page_id: p.id,
+          page_name: p.name,
+          page_access_token: p.access_token,
+          is_active: true
+        }));
+        await connection.save();
+      }
+
+      if (adAccounts.length > 0) {
+        const adAccountStatusMap = {
+          1: 'Active', 2: 'Disabled', 3: 'Unsettled', 7: 'Pending Review',
+          9: 'In Grace Period', 100: 'Pending Closure', 101: 'Test Account', 201: 'Closed'
+        };
+
+        const adDocs = adAccounts.map(acc => {
+          const hasPaymentMethod = !!(acc.funding_source_details?.id);
+          return {
             user_id: userId,
+            workspace_id: workspaceId || null,
             connection_id: connection._id,
-            page_id: p.id,
-            page_name: p.name,
-            page_access_token: p.access_token,
-            category: p.category,
-            picture_url: p.picture?.data?.url,
-            is_meta_verified: p.is_verified || false,
-            business_id: p.business?.id || null,
-            is_whatsapp_connected: !!p.is_whatsapp_connected,
+            ad_account_id: acc.id,
+            name: acc.name,
+            currency: acc.currency,
+            account_status: acc.account_status,
+            status_label: adAccountStatusMap[acc.account_status] || 'Unknown',
+            has_payment_method: hasPaymentMethod,
+            can_create_ads: acc.account_status === 1 && hasPaymentMethod,
+            balance: acc.balance,
             is_active: true
-          }));
-
-          await FacebookPage.insertMany(pageDocs);
-        }
-
-        if (adAccounts.length > 0) {
-          const adAccountStatusMap = {
-            1: 'Active', 2: 'Disabled', 3: 'Unsettled', 7: 'Pending Review',
-            9: 'In Grace Period', 100: 'Pending Closure', 101: 'Test Account', 201: 'Closed'
           };
+        });
 
-          const adDocs = adAccounts.map(acc => {
-            const hasPaymentMethod = !!(acc.funding_source_details?.id);
-            return {
-              user_id: userId,
-              connection_id: connection._id,
-              ad_account_id: acc.id,
-              name: acc.name,
-              currency: acc.currency,
-              account_status: acc.account_status,
-              status_label: adAccountStatusMap[acc.account_status] || 'Unknown',
-              has_payment_method: hasPaymentMethod,
-              can_create_ads: acc.account_status === 1 && hasPaymentMethod,
-              balance: acc.balance,
-              is_active: true
-            };
-          });
-
-          await FacebookAdAccount.deleteMany({ connection_id: connection._id });
-          await FacebookAdAccount.insertMany(adDocs);
+        for (const doc of adDocs) {
+          try {
+            await FacebookAdAccount.findOneAndUpdate(
+              { ad_account_id: doc.ad_account_id },
+              { $set: doc },
+              { upsert: true, new: true }
+            );
+          } catch (upsertErr) {
+            console.error(`Failed to upsert FacebookAdAccount ${doc.ad_account_id}:`, upsertErr.message);
+          }
         }
+      }
     } catch (pageErr) {
       console.warn('Failed to fetch Facebook pages during connection:', pageErr.message);
     }
@@ -237,8 +288,14 @@ export const handleFacebookCallback = async (req, res) => {
 export const getFacebookPages = async (req, res) => {
   try {
     const userId = req.user.owner_id || req.user.id;
-    const connection = await FacebookConnection.findOne({ user_id: userId, is_active: true }).lean();
-    let pages = await FacebookPage.find({ user_id: userId, is_active: true }).select('-page_access_token').lean();
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
+    const hasValidWorkspace = workspaceId && mongoose.Types.ObjectId.isValid(workspaceId);
+
+    const query = hasValidWorkspace ? { workspace_id: workspaceId, is_active: true } : { user_id: userId, workspace_id: null, is_active: true };
+    const connection = await FacebookConnection.findOne(query).lean();
+
+    const pageQuery = hasValidWorkspace ? { workspace_id: workspaceId, is_active: true } : (connection ? { connection_id: connection._id, is_active: true } : { user_id: userId, is_active: true });
+    let pages = await FacebookPage.find(pageQuery).select('-page_access_token').lean();
 
     if (connection?.default_page_id) {
       pages = pages.map(page => ({
@@ -265,25 +322,24 @@ export const getFacebookPages = async (req, res) => {
 export const syncFacebookPages = async (req, res) => {
   try {
     const userId = req.user.owner_id || req.user.id;
+    const workspaceId = req.body.workspace_id || req.query.workspace_id || req.headers['x-workspace-id'];
+    const hasValidWorkspace = workspaceId && mongoose.Types.ObjectId.isValid(workspaceId);
 
-
-    const connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+    const query = hasValidWorkspace ? { workspace_id: workspaceId, is_active: true } : { user_id: userId, workspace_id: null, is_active: true };
+    const connection = await FacebookConnection.findOne(query);
     if (!connection) {
       return res.status(404).json({ success: false, error: 'No active Facebook connection found' });
     }
 
-
     const pages = await fetchAllFacebookPages(connection.long_lived_access_token, connection.fb_user_id, userId);
-
-
     const validPages = pages.filter(p => !!p.access_token);
 
     if (validPages.length > 0) {
-
       await FacebookPage.deleteMany({ connection_id: connection._id });
 
       const pageDocs = validPages.map(p => ({
         user_id: userId,
+        workspace_id: connection.workspace_id || workspaceId || null,
         connection_id: connection._id,
         page_id: p.id,
         page_name: p.name,
@@ -293,12 +349,46 @@ export const syncFacebookPages = async (req, res) => {
         is_meta_verified: p.is_verified || false,
         business_id: p.business?.id || null,
         is_whatsapp_connected: !!p.is_whatsapp_connected,
+        is_instagram_connected: !!p.instagram_business_account?.id,
+        instagram_username: p.instagram_business_account?.username || null,
+        instagram_account_id: p.instagram_business_account?.id || null,
         is_active: true
       }));
 
       await FacebookPage.insertMany(pageDocs);
+
+      for (const p of validPages) {
+        try {
+          await facebookProvider.subscribePageToWebhook(p.id, p.access_token);
+          console.log(`[Facebook Sync] Subscribed Page ${p.name} (ID: ${p.id}) to webhooks`);
+        } catch (subErr) {
+          console.error(`[Facebook Sync] Failed to subscribe Page ${p.name} (ID: ${p.id}):`, subErr.message);
+        }
+      }
+
+      const instagramPages = validPages.filter(p => !!p.instagram_business_account?.id);
+      if (instagramPages.length > 0) {
+        for (const p of instagramPages) {
+          try {
+            await instagramProvider.subscribePageToWebhook(p.id, p.access_token);
+            console.log(`[Facebook Sync] Subscribed Instagram Page ${p.name} (ID: ${p.id}) to webhooks`);
+          } catch (subErr) {
+            console.error(`[Facebook Sync] Failed to subscribe Instagram Page ${p.name} (ID: ${p.id}):`, subErr.message);
+          }
+        }
+      }
+
+      connection.pages = validPages.map(p => ({
+        page_id: p.id,
+        page_name: p.name,
+        page_access_token: p.access_token,
+        is_active: true
+      }));
+      await connection.save();
     } else {
       await FacebookPage.deleteMany({ connection_id: connection._id });
+      connection.pages = [];
+      await connection.save();
     }
 
     return res.status(200).json({
@@ -320,8 +410,11 @@ export const syncFacebookPages = async (req, res) => {
 export const syncLinkedSocialAccounts = async (req, res) => {
   try {
     const userId = req.user.owner_id || req.user.id;
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
+    const hasValidWorkspace = workspaceId && mongoose.Types.ObjectId.isValid(workspaceId);
 
-    const connection = await FacebookConnection.findOne({ user_id: userId, is_active: true });
+    const query = hasValidWorkspace ? { workspace_id: workspaceId, is_active: true } : { user_id: userId, workspace_id: null, is_active: true };
+    const connection = await FacebookConnection.findOne(query);
     if (!connection) {
       return res.status(404).json({ success: false, error: 'No active Facebook connection found' });
     }
@@ -347,6 +440,8 @@ export const syncLinkedSocialAccounts = async (req, res) => {
       globalWhatsappConnected = true;
     }
 
+    const instagramPages = [];
+
     for (const page of localPages) {
       try {
         const response = await axios.get(`https://graph.facebook.com/${FB_API_VERSION}/${page.page_id}`, {
@@ -360,19 +455,44 @@ export const syncLinkedSocialAccounts = async (req, res) => {
         const businessId = pageData.business?.id;
         const hasInstagram = !!pageData.instagram_business_account?.id;
         const instagramUsername = pageData.instagram_business_account?.username || null;
+        const instagramAccountId = pageData.instagram_business_account?.id || null;
 
         await FacebookPage.findByIdAndUpdate(page._id, {
           is_instagram_connected: hasInstagram,
           instagram_username: instagramUsername,
+          instagram_account_id: instagramAccountId,
           is_whatsapp_connected: globalWhatsappConnected,
           business_id: businessId
         });
+
+        if (hasInstagram) {
+          instagramPages.push({
+            page_id: page.page_id,
+            page_name: page.page_name,
+            page_access_token: page.page_access_token || connection.long_lived_access_token,
+            instagram_account_id: instagramAccountId,
+            instagram_username: instagramUsername || 'instagram_user',
+            is_active: true
+          });
+        }
 
         updatedPages++;
       } catch (err) {
         console.warn(`Failed to sync Instagram/Business for page ${page.page_id}:`, err?.response?.data || err.message);
       }
     }
+
+    if (instagramPages.length > 0) {
+      for (const p of instagramPages) {
+        try {
+          await instagramProvider.subscribePageToWebhook(p.page_id, p.page_access_token);
+          console.log(`[Facebook Sync] Subscribed Instagram Page ${p.page_name} (ID: ${p.page_id}) to webhooks`);
+        } catch (subErr) {
+          console.error(`[Facebook Sync] Failed to subscribe Instagram Page ${p.page_name} (ID: ${p.page_id}):`, subErr.message);
+        }
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Linked social accounts synced successfully',
@@ -393,16 +513,18 @@ export const syncLinkedSocialAccounts = async (req, res) => {
 export const updateFacebookDefaults = async (req, res) => {
   try {
     const userId = req.user.owner_id || req.user.id;
-    const { default_page_id } = req.body;
+    const { default_page_id, workspace_id } = req.body;
+    const hasValidWorkspace = workspace_id && mongoose.Types.ObjectId.isValid(workspace_id);
 
+    const query = hasValidWorkspace ? { workspace_id, is_active: true } : { user_id: userId, workspace_id: null, is_active: true };
     const connection = await FacebookConnection.findOneAndUpdate(
-      { user_id: userId, is_active: true },
+      query,
       {
         $set: {
           default_page_id: default_page_id || null
         }
       },
-      { returnDocument: 'after' }
+      { new: true }
     );
 
     if (!connection) {
@@ -427,3 +549,44 @@ export const updateFacebookDefaults = async (req, res) => {
   }
 };
 
+export const disconnectFacebookPage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.owner_id || req.user.id;
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
+    const hasValidWorkspace = workspaceId && mongoose.Types.ObjectId.isValid(workspaceId);
+
+    const query = { _id: id, user_id: userId };
+    if (hasValidWorkspace) {
+      query.workspace_id = workspaceId;
+    }
+
+    const page = await FacebookPage.findOne(query);
+    if (!page) {
+      return res.status(404).json({ success: false, error: 'Facebook page not found or unauthorized' });
+    }
+
+    if (page.page_access_token) {
+      try {
+        await facebookProvider.unsubscribePageToWebhook(page.page_id, page.page_access_token);
+      } catch (err) {
+        console.warn('Could not unsubscribe webhook from facebook page:', err.message);
+      }
+    }
+
+    const formDocs = await FacebookLeadForm.find({ facebook_page_id: id });
+    const formIds = formDocs.map(f => f._id);
+
+    await FacebookLead.deleteMany({ lead_form_id: { $in: formIds } });
+    await FacebookLeadForm.deleteMany({ facebook_page_id: id });
+
+    const connection = await FacebookConnection.findById(page.connection_id);
+
+    await FacebookPage.findByIdAndDelete(id);
+
+    res.status(200).json({ success: true, message: 'Facebook page disconnected successfully' });
+  } catch (error) {
+    console.error('Error disconnecting facebook page:', error);
+    res.status(500).json({ success: false, error: 'Failed to disconnect facebook page' });
+  }
+};

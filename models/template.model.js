@@ -12,13 +12,13 @@ const HeaderSchema = new mongoose.Schema(
   {
     format: {
       type: String,
-      enum: ["none", "text", "media"],
+      enum: ["none", "text", "media", "location"],
       default: "none"
     },
     text: { type: String },
     media_type: {
       type: String,
-      enum: ["image", "video", "document"]
+      enum: ["image", "video", "document", "location"]
     },
     media_url: { type: String },
     handle: { type: String },
@@ -212,6 +212,11 @@ const TemplateSchema = new mongoose.Schema(
     authentication_options: AuthenticationOptionsSchema,
 
     meta_template_id: { type: String },
+    platform: {
+      type: String,
+      enum: ["whatsapp", "telegram", "facebook", "instagram", "twitter"],
+      default: "whatsapp"
+    },
     rejection_reason: { type: String },
     deleted_at: { type: Date, default: null },
     deleted_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }

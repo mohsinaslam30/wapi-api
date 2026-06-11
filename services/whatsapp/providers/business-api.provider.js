@@ -26,7 +26,8 @@ const MESSAGE_TYPES = {
   LOCATION: 'location',
   TEMPLATE: 'template',
   REACTION: 'reaction',
-  TYPING: 'typing'
+  TYPING: 'typing',
+  STICKER: 'sticker'
 };
 
 export default class BusinessAPIProvider extends BaseProvider {
@@ -94,13 +95,19 @@ export default class BusinessAPIProvider extends BaseProvider {
         if (messageText) payload.document.caption = messageText;
         break;
 
+      case MESSAGE_TYPES.STICKER:
+        payload.sticker = {};
+        if (mediaId) payload.sticker.id = mediaId;
+        else if (mediaUrl) payload.sticker.link = mediaUrl;
+        break;
+
       case MESSAGE_TYPES.LOCATION:
         const { location } = params;
         payload.location = {
-          longitude: location.longitude,
-          latitude: location.latitude,
-          name: location.name,
-          address: location.address
+          longitude: Number(location.longitude),
+          latitude: Number(location.latitude),
+          ...(location.name ? { name: location.name } : {}),
+          ...(location.address ? { address: location.address } : {})
         };
         break;
 
@@ -238,7 +245,7 @@ export default class BusinessAPIProvider extends BaseProvider {
                       rest[p.type] = { id: mediaId };
                       return rest;
                     }
-                    
+
                     if (p.type && p[p.type] && p[p.type].link) {
                       return { ...p, [p.type]: { ...p[p.type], link: this.getPublicMediaUrl(p[p.type].link) } };
                     }
@@ -379,6 +386,7 @@ export default class BusinessAPIProvider extends BaseProvider {
 
   getPublicMediaUrl(filePath) {
     if (!filePath) return null;
+    if (typeof filePath !== 'string') return filePath;
 
     const appUrl = process.env.APP_URL || '';
 
@@ -439,22 +447,21 @@ export default class BusinessAPIProvider extends BaseProvider {
 
     let contact = null;
     if (!params.fromCampaignSystem) {
-      contact = await Contact.findOne({
-        phone_number: recipientNumber,
-        created_by: userId,
-        deleted_at: null
-      });
-
-      if (!contact) {
-        contact = await Contact.create({
-          phone_number: recipientNumber,
-          name: recipientNumber,
-          source: 'whatsapp',
-          user_id: userId,
-          created_by: userId,
-          status: 'lead'
-        });
-      }
+      contact = await Contact.findOneAndUpdate(
+        { phone_number: recipientNumber, created_by: userId },
+        {
+          $setOnInsert: {
+            phone_number: recipientNumber,
+            name: recipientNumber,
+            source: 'whatsapp',
+            user_id: userId,
+            created_by: userId,
+            status: 'lead'
+          },
+          $set: { deleted_at: null }
+        },
+        { new: true, upsert: true }
+      ).lean();
     } else {
       contact = { _id: params.contactId || null };
     }
@@ -532,7 +539,31 @@ export default class BusinessAPIProvider extends BaseProvider {
       }
 
       if (interactiveType === 'list') {
-        const { header, body, footer, buttonTitle, items, sectionTitle } = listParams || {};
+        const { header, body, footer, buttonTitle, sections: sectionsInput, items, sectionTitle } = listParams || {};
+
+        let sections;
+        if (sectionsInput && Array.isArray(sectionsInput)) {
+          sections = sectionsInput.map(section => ({
+            title: section.title || 'Options',
+            rows: (section.rows || []).map((row, i) => ({
+              id: row.rowId || row.id || `row_${i}`,
+              title: row.title,
+              description: row.description || ''
+            }))
+          }));
+        } else {
+          sections = [
+            {
+              title: sectionTitle || 'Options',
+              rows: (items || []).map(item => ({
+                id: item.id,
+                title: item.title,
+                description: item.description || ''
+              }))
+            }
+          ];
+        }
+
         whatsappPayload = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
@@ -552,16 +583,7 @@ export default class BusinessAPIProvider extends BaseProvider {
             } : undefined,
             action: {
               button: buttonTitle || 'Select',
-              sections: [
-                {
-                  title: sectionTitle || 'Options',
-                  rows: (items || []).map(item => ({
-                    id: item.id,
-                    title: item.title,
-                    description: item.description
-                  }))
-                }
-              ]
+              sections
             }
           }
         };
@@ -680,6 +702,19 @@ export default class BusinessAPIProvider extends BaseProvider {
         contentToStore = reactionEmoji;
       }
 
+      let dbFileUrl = null;
+      if (localFilePath) {
+        dbFileUrl = localFilePath;
+      } else if (mediaUrl) {
+        if (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://')) {
+          dbFileUrl = mediaUrl;
+        } else {
+          dbFileUrl = mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl;
+        }
+      } else if (finalMediaUrl) {
+        dbFileUrl = finalMediaUrl;
+      }
+
       savedMessage = await Message.create({
         sender_number: myPhoneNumber,
         user_id: userId,
@@ -687,7 +722,7 @@ export default class BusinessAPIProvider extends BaseProvider {
         contact_id: contact?._id || params.contactId,
         content: contentToStore,
         message_type: messageType,
-        file_url: localFilePath || finalMediaUrl || null,
+        file_url: dbFileUrl,
         file_type: file?.mimetype || null,
         from_me: true,
         direction: 'outbound',

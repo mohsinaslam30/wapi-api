@@ -24,8 +24,10 @@ import {
   Workspace,
   FacebookLead,
   GoogleAccount,
-  QuickReply
+  QuickReply,
+  Plan
 } from '../models/index.js';
+
 
 
 const COUNT_FEATURES = [
@@ -60,7 +62,15 @@ const BOOLEAN_FEATURES = [
   'whatsapp_webhook',
   'auto_replies',
   'analytics',
-  'priority_support'
+  'priority_support',
+  'omnichannel_facebook',
+  'omnichannel_instagram',
+  'omnichannel_telegram',
+  'omnichannel_twitter',
+  'fb_chat', 'fb_automation', 'fb_campaign', 'fb_template', 'fb_keyword', 'fb_comment_dm', 'fb_retrigger',
+  'ig_chat', 'ig_automation', 'ig_campaign', 'ig_template', 'ig_keyword', 'ig_comment_dm', 'ig_retrigger',
+  'tg_chat', 'tg_automation', 'tg_campaign', 'tg_template', 'tg_keyword',
+  'tw_chat', 'tw_automation', 'tw_campaign', 'tw_template', 'tw_keyword'
 ];
 
 
@@ -71,7 +81,22 @@ function getUserId(user) {
   return mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null;
 }
 
+function applySubscriptionOverrides(plan, subscription) {
+  if (!plan || !subscription) return;
 
+
+  if (subscription.features && Object.keys(subscription.features).length > 0) {
+    plan.features = { ...plan.features, ...subscription.features };
+  } else if (subscription.plan_id?.features) {
+    plan.features = subscription.plan_id.features;
+  }
+
+  if (subscription.enabled_features && Object.keys(subscription.enabled_features).length > 0) {
+    plan.enabled_features = { ...plan.enabled_features, ...subscription.enabled_features };
+  } else if (subscription.plan_id?.enabled_features) {
+    plan.enabled_features = subscription.plan_id.enabled_features;
+  }
+}
 export const requireSubscription = async (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
@@ -82,26 +107,35 @@ export const requireSubscription = async (req, res, next) => {
 
   const userId = req.user.owner_id;
 
+  let subscription = await Subscription.findOne({
+    user_id: userId,
+    deleted_at: null,
+    status: { $in: ['active', 'trial'] }
+  })
+    .sort({ created_at: -1 })
+    .populate('plan_id')
+    .lean();
+
+
+
   if (req.user.role === 'super_admin') {
     const subscription = await Subscription.findOne({
       user_id: userId,
       deleted_at: null,
       status: { $in: ['active', 'trial'] },
-      current_period_end: { $gte: new Date() },
+      $or: [
+        { current_period_end: { $gte: new Date() } },
+        { current_period_end: null }
+      ]
     })
+      .sort({ created_at: -1 })
       .populate('plan_id')
       .lean();
 
     if (subscription && subscription.plan_id) {
       req.subscription = subscription;
       req.plan = subscription.plan_id;
-      if (subscription.is_custom && subscription.features) {
-        req.plan.features = subscription.features;
-      } else if (!subscription.is_custom && subscription.plan_id.features) {
-        req.plan.features = subscription.plan_id.features;
-      } else if (subscription.features) {
-        req.plan.features = subscription.features;
-      }
+      applySubscriptionOverrides(req.plan, subscription);
     } else {
       const virtualFeatures = {};
       COUNT_FEATURES.forEach(f => virtualFeatures[f] = Infinity);
@@ -116,14 +150,6 @@ export const requireSubscription = async (req, res, next) => {
     }
     return next();
   }
-
-  const subscription = await Subscription.findOne({
-    user_id: userId,
-    deleted_at: null,
-    status: { $in: ['active', 'trial'] }
-  })
-    .populate('plan_id')
-    .lean();
 
   if (!subscription || !subscription.plan_id) {
     const adminSettings = await Setting.findOne().select('free_trial_enabled free_trial_days').lean();
@@ -150,13 +176,7 @@ export const requireSubscription = async (req, res, next) => {
 
   req.subscription = subscription;
   req.plan = subscription.plan_id;
-  if (subscription.is_custom && subscription.features) {
-    req.plan.features = subscription.features;
-  } else if (!subscription.is_custom && subscription.plan_id.features) {
-    req.plan.features = subscription.plan_id.features;
-  } else if (subscription.features) {
-    req.plan.features = subscription.features;
-  }
+  applySubscriptionOverrides(req.plan, subscription);
   next();
 };
 
@@ -166,12 +186,50 @@ export const requirePlanFeature = (feature) => {
     throw new Error(`requirePlanFeature: unknown feature "${feature}"`);
   }
 
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (req.user?.role === 'super_admin') return next();
     if (req.isFreeTrial) return next();
 
     const isEnabledInToggles = req.plan?.enabled_features?.[feature] === true || req.plan?.enabled_features?.[feature] === "true";
     const isEnabledInBooleans = req.plan?.features?.[feature] === true || req.plan?.features?.[feature] === "true";
+
+    if (!isEnabledInToggles && !isEnabledInBooleans) {
+      return res.status(403).json({
+        success: false,
+        message: `Your plan does not include this feature: ${feature.replace(/_/g, ' ')}`,
+      });
+    }
+    next();
+  };
+};
+
+export const requirePlatformFeature = (featureSuffix) => {
+  return async (req, res, next) => {
+    if (req.user?.role === 'super_admin') return next();
+    if (req.isFreeTrial) return next();
+
+    const platform = req.body.platform || req.query.platform;
+    if (!platform) return res.status(400).json({ success: false, error: 'platform is required for feature check' });
+
+    let feature;
+    if (featureSuffix === 'connection') {
+      feature = `omnichannel_${platform}`;
+    } else {
+      let prefix = '';
+      if (platform === 'facebook') prefix = 'fb_';
+      else if (platform === 'instagram') prefix = 'ig_';
+      else if (platform === 'telegram') prefix = 'tg_';
+      else if (platform === 'twitter') prefix = 'tw_';
+      feature = `${prefix}${featureSuffix}`;
+    }
+
+    if (!BOOLEAN_FEATURES.includes(feature) && !COUNT_FEATURES.includes(feature)) {
+      throw new Error(`requirePlatformFeature: unknown feature "${feature}"`);
+    }
+
+    const isEnabledInToggles = req.plan?.enabled_features?.[feature] === true || req.plan?.enabled_features?.[feature] === "true";
+    const isEnabledInBooleans = req.plan?.features?.[feature] === true || req.plan?.features?.[feature] === "true";
+    console.log("isEnabledInBooleans", isEnabledInBooleans, "feature:", feature, "plan features:", req.plan?.features);
 
     if (!isEnabledInToggles && !isEnabledInBooleans) {
       return res.status(403).json({
@@ -293,26 +351,25 @@ export const attachSubscriptionIfAny = async (req, res, next) => {
   const userId = getUserId(req.user);
   if (!userId) return next();
 
-  const subscription = await Subscription.findOne({
+  let subscription = await Subscription.findOne({
     user_id: userId,
     deleted_at: null,
     status: { $in: ['active', 'trial'] },
-    current_period_end: { $gte: new Date() },
+    $or: [
+      { current_period_end: { $gte: new Date() } },
+      { current_period_end: null }
+    ]
   })
     .populate('plan_id')
     .lean();
+
+
 
   req.subscription = subscription || null;
   req.plan = subscription?.plan_id || null;
 
   if (subscription && req.plan) {
-    if (subscription.is_custom && subscription.features) {
-      req.plan.features = subscription.features;
-    } else if (!subscription.is_custom && subscription.plan_id.features) {
-      req.plan.features = subscription.plan_id.features;
-    } else if (subscription.features) {
-      req.plan.features = subscription.features;
-    }
+    applySubscriptionOverrides(req.plan, subscription);
   }
 
 

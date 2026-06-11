@@ -12,12 +12,6 @@ const chatbotSchema = new mongoose.Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: 'User'
         },
-        waba_id: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'WhatsappWaba',
-            required: true,
-            index: true
-        },
         name: {
             type: String,
             required: true,

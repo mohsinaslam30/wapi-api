@@ -12,6 +12,7 @@ import {
   updateGoogleSettings,
   getGoogleSettings
 } from "../controllers/setting.controller.js";
+import { logCookieConsent } from "../controllers/cookie-log.controller.js";
 import { authenticateUser, authorizeAdmin, authenticate } from "../middlewares/auth.js";
 import { uploader } from "../utils/upload.js";
 import { checkPermission } from "../middlewares/permission.js";
@@ -28,6 +29,7 @@ const logoFields = [
 
 
 router.get("/", getAllSettings);
+router.post("/cookie-consent", logCookieConsent);
 
 
 router.use(authenticate);

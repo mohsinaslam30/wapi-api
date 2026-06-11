@@ -13,7 +13,21 @@ const pageSchema = new mongoose.Schema({
     },
     content: {
         type: String,
-        required: true
+        required: function() {
+            return !['instagram', 'whatsapp', 'telegram', 'facebook', 'ai_calling', 'appointment_booking', 'broadcast_bulk_messages', 'catalog', 'product-catalog', 'whatsapp_forms', 'automation_builder', 'ctwa', 'shared_team_inbox'].includes(this.slug);
+        }
+    },
+    dynamic_content: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null
+    },
+    system_reserved: {
+        type: Boolean,
+        default: false
+    },
+    color_config: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null
     },
     meta_title: {
         type: String,

@@ -364,7 +364,7 @@ export const updateReplyMaterial = async (req, res) => {
             item.file_path = req.file.path.startsWith('http') ? req.file.path : `/${req.file.destination}/${req.file.filename}`.replace(/\\/g, '/');
             item.file_size = req.file.size;
             if (oldPath) await deleteFile(oldPath);
-            
+
             await User.findByIdAndUpdate(userId, { $inc: { storage_used: req.file.size - oldSize } });
         }
 

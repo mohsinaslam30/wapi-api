@@ -10,7 +10,7 @@ const ecommerceProductSchema = new mongoose.Schema({
   catalog_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'EcommerceCatalog',
-    required: true
+    required: false
   },
 
   product_external_id: {
@@ -99,6 +99,13 @@ const ecommerceProductSchema = new mongoose.Schema({
   meta_data: {
     type: mongoose.Schema.Types.Mixed,
     default: {}
+  },
+
+  type: {
+    type: String,
+    enum: ['whatsapp', 'shopify'],
+    default: 'whatsapp',
+    index: true
   },
 
   deleted_at: {

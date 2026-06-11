@@ -10,22 +10,19 @@ let cachedStripeKey = null;
 async function getStripeInstance() {
     const setting = await Setting.findOne().lean();
     const key = setting?.stripe_secret_key || process.env.STRIPE_SECRET_KEY;
-    
+
     if (!key || key.includes('_your_')) return null;
-    
+
     if (cachedStripe && cachedStripeKey === key) return cachedStripe;
-    
+
     cachedStripeKey = key;
     cachedStripe = new Stripe(key);
     return cachedStripe;
 }
 
-// Proxy for backward compatibility where sync access is needed
 const stripe = new Proxy({}, {
     get(_, prop) {
         if (!cachedStripe) {
-            // This is a bit of a hack since we can't await in a proxy getter easily
-            // Most of the app should use the Service methods which are async
             const key = process.env.STRIPE_SECRET_KEY;
             if (key && !key.includes('_your_')) {
                 cachedStripeKey = key;
@@ -49,10 +46,10 @@ async function getRazorpayInstance() {
     const keySecret = setting?.razorpay_key_secret || process.env.RAZORPAY_KEY_SECRET;
 
     if (!keyId || !keySecret || keyId.includes('_your_')) return null;
-    
+
     const key = `${keyId}:${keySecret}`;
     if (cachedRazorpay && cachedRazorpayKey === key) return cachedRazorpay;
-    
+
     cachedRazorpayKey = key;
     cachedRazorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
     return cachedRazorpay;
@@ -698,7 +695,7 @@ export const PayPalService = {
                             },
                             tenure_type: 'REGULAR',
                             sequence: 1,
-                            total_cycles: 0, 
+                            total_cycles: 0,
                             pricing_scheme: {
                                 fixed_price: {
                                     value: plan.price.toFixed(2),

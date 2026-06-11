@@ -35,7 +35,8 @@ export const createTemplate = async (req, res) => {
       offer_text,
       has_expiration,
       template_type = "standard",
-      carousel_cards
+      carousel_cards,
+      platform = "whatsapp"
     } = req.body;
 
     if (typeof buttons === "string") {
@@ -89,33 +90,40 @@ export const createTemplate = async (req, res) => {
     console.log("template_name", template_name);
 
     const userId = req.user.owner_id;
+    let waba = null;
+    let access_token = null;
+    let whatsapp_business_account_id = null;
+    let app_id = null;
 
-    if (!waba_id) {
-      return res.status(400).json({ error: "WABA ID is required" });
+    if (platform === "whatsapp") {
+      if (!waba_id) {
+        return res.status(400).json({ error: "WABA ID is required" });
+      }
+
+      let wabaQuery = {
+        user_id: userId,
+        deleted_at: null,
+      };
+
+      if (mongoose.Types.ObjectId.isValid(waba_id)) {
+        wabaQuery.$or = [
+          { _id: waba_id },
+          { whatsapp_business_account_id: waba_id }
+        ];
+      } else {
+        wabaQuery.whatsapp_business_account_id = waba_id;
+      }
+
+      waba = await WhatsappWaba.findOne(wabaQuery);
+      if (!waba) {
+        return res.status(404).json({ error: "WhatsApp WABA not found" });
+      }
+
+      waba_id = waba._id.toString();
+      access_token = waba.access_token;
+      whatsapp_business_account_id = waba.whatsapp_business_account_id;
+      app_id = waba.app_id;
     }
-
-    let wabaQuery = {
-      user_id: userId,
-      deleted_at: null,
-    };
-
-    if (mongoose.Types.ObjectId.isValid(waba_id)) {
-      wabaQuery.$or = [
-        { _id: waba_id },
-        { whatsapp_business_account_id: waba_id }
-      ];
-    } else {
-      wabaQuery.whatsapp_business_account_id = waba_id;
-    }
-
-    const waba = await WhatsappWaba.findOne(wabaQuery);
-    if (!waba) {
-      return res.status(404).json({ error: "WhatsApp WABA not found" });
-    }
-
-    waba_id = waba._id.toString();
-
-    const { access_token, whatsapp_business_account_id, app_id } = waba;
 
     const normalizedCategory = (category || "UTILITY").toUpperCase();
     const isAuthenticationCategory = normalizedCategory === "AUTHENTICATION";
@@ -144,18 +152,21 @@ export const createTemplate = async (req, res) => {
         }
 
         if (buffer) {
-          const handle = await uploadSampleMediaForTemplate({
-            app_id: app_id,
-            access_token,
-            file_name: uploadedFile.originalname,
-            file_size: uploadedFile.size,
-            mime_type: uploadedFile.mimetype,
-            buffer: buffer,
-          });
-          
+          let handle = null;
+          if (platform === "whatsapp" && waba?.provider !== "baileys" && app_id && access_token) {
+            handle = await uploadSampleMediaForTemplate({
+              app_id: app_id,
+              access_token,
+              file_name: uploadedFile.originalname,
+              file_size: uploadedFile.size,
+              mime_type: uploadedFile.mimetype,
+              buffer: buffer,
+            });
+          }
+
           const mediaType = getWhatsAppTypeFromMime(uploadedFile.mimetype);
           const localUrl = await saveBufferLocally(buffer, uploadedFile.mimetype, mediaType, userId);
-          
+
           console.log("handle", handle, "localUrl", localUrl);
           header = {
             format: "media",
@@ -165,7 +176,11 @@ export const createTemplate = async (req, res) => {
           };
         }
       }
-      if (req.body.header_text && !header) {
+      if (req.body.template_type === "location" && !header) {
+        header = {
+          format: "location",
+        };
+      } else if (req.body.header_text && !header) {
         header = {
           format: "text",
           text: req.body.header_text,
@@ -193,20 +208,25 @@ export const createTemplate = async (req, res) => {
         }
 
         if (buffer) {
-          const handle = await uploadSampleMediaForTemplate({
-            app_id: app_id,
-            access_token,
-            file_name: file.originalname,
-            file_size: file.size,
-            mime_type: file.mimetype,
-            buffer: buffer,
-          });
+          let handle = null;
+          if (platform === "whatsapp" && waba?.provider !== "baileys" && app_id && access_token) {
+            handle = await uploadSampleMediaForTemplate({
+              app_id: app_id,
+              access_token,
+              file_name: file.originalname,
+              file_size: file.size,
+              mime_type: file.mimetype,
+              buffer: buffer,
+            });
+          }
           const card = rawCarouselCards[i];
           if (card && card.components) {
             const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
             if (headerComp) {
               headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
-              headerComp.example = { header_handle: [handle] };
+              if (handle) {
+                headerComp.example = { header_handle: [handle] };
+              }
             }
           }
         }
@@ -317,7 +337,7 @@ export const createTemplate = async (req, res) => {
     const createdTemplate = await Template.create({
       user_id: req.user.owner_id,
       created_by: req.user.id,
-      waba_id: waba_id,
+      waba_id: waba_id || null,
       template_name: template_name.toLowerCase(),
       language,
       category: normalizedCategory,
@@ -333,49 +353,53 @@ export const createTemplate = async (req, res) => {
       template_type: detectedTemplateType,
       carousel_cards: isCarouselTemplate ? rawCarouselCards : undefined,
       authentication_options: authentication_options || undefined,
-      status: "draft",
+      status: (platform === "whatsapp" && waba?.provider !== "baileys") ? "draft" : "approved",
+      platform: platform,
     });
     console.log("createdTemplate", createdTemplate);
-    try {
-      const metaPayload = buildMetaTemplatePayload(createdTemplate);
 
-      const metaResponse = await submitTemplateToMeta(metaPayload, waba.whatsapp_business_account_id, waba.access_token);
-
-      await Template.findByIdAndUpdate(createdTemplate._id, {
-        status: metaResponse.status?.toLowerCase(),
-        meta_template_id: metaResponse.id || metaResponse.name,
-      });
-
+    if (platform === "whatsapp" && waba && waba.provider !== "baileys") {
       try {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const metaPayload = buildMetaTemplatePayload(createdTemplate);
 
-        const wabaInfo = await WhatsappWaba.findOne({
-          _id: waba_id,
-          user_id: userId,
-          deleted_at: null,
+        const metaResponse = await submitTemplateToMeta(metaPayload, waba.whatsapp_business_account_id, waba.access_token);
+
+        await Template.findByIdAndUpdate(createdTemplate._id, {
+          status: metaResponse.status?.toLowerCase(),
+          meta_template_id: metaResponse.id || metaResponse.name,
         });
 
-        if (wabaInfo) {
-          const metaTemplates = await fetchTemplatesFromMeta(wabaInfo.whatsapp_business_account_id, wabaInfo.access_token);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
 
-          const metaTemplate = metaTemplates.find((t) => t.name === template_name.toLowerCase());
-          if (metaTemplate && metaTemplate.components) {
-            const headerInfo = extractHeader(metaTemplate.components);
-            if (headerInfo && headerInfo.media_url) {
-              await Template.findByIdAndUpdate(createdTemplate._id, { header: headerInfo }, { returnDocument: 'after' });
+          const wabaInfo = await WhatsappWaba.findOne({
+            _id: waba_id,
+            user_id: userId,
+            deleted_at: null,
+          });
+
+          if (wabaInfo) {
+            const metaTemplates = await fetchTemplatesFromMeta(wabaInfo.whatsapp_business_account_id, wabaInfo.access_token);
+
+            const metaTemplate = metaTemplates.find((t) => t.name === template_name.toLowerCase());
+            if (metaTemplate && metaTemplate.components) {
+              const headerInfo = extractHeader(metaTemplate.components);
+              if (headerInfo && headerInfo.media_url) {
+                await Template.findByIdAndUpdate(createdTemplate._id, { header: headerInfo }, { returnDocument: 'after' });
+              }
             }
           }
+        } catch (syncError) {
+          console.warn("Could not sync template after creation:", syncError.message);
         }
-      } catch (syncError) {
-        console.warn("Could not sync template after creation:", syncError.message);
+      } catch (error) {
+        await Template.findByIdAndDelete(createdTemplate._id);
+        throw error;
       }
-    } catch (error) {
-      await Template.findByIdAndDelete(createdTemplate._id);
-      throw error;
     }
 
     return res.status(201).json({
-      message: "Template submitted",
+      message: (platform === "whatsapp" && waba?.provider !== "baileys") ? "Template submitted" : "Template created successfully",
       template_id: createdTemplate._id,
     });
   } catch (error) {
@@ -572,7 +596,13 @@ export const buildMetaTemplatePayload = (template) => {
         };
       }
 
+
       components.push(component);
+    } else if (template.header.format === "location") {
+      components.push({
+        type: "HEADER",
+        format: "LOCATION",
+      });
     }
     console.log("header", template.header.handle);
   }
@@ -673,7 +703,7 @@ export const buildMetaTemplatePayload = (template) => {
     }
 
     if (ctaButtons.length > 2) throw new Error("Maximum 2 CTA buttons allowed");
-    if (quickReplyButtons.length > 3) throw new Error("Maximum 3 Quick Reply buttons allowed");
+    if (quickReplyButtons.length > 10) throw new Error("Maximum 10 Quick Reply buttons allowed");
 
     if (ctaButtons.length || quickReplyButtons.length) {
       components.push({
@@ -813,12 +843,16 @@ export const getTemplateById = async (req, res) => {
 
 export const getAdminTemplatesForUsers = async (req, res) => {
   try {
-    const { sector, template_category, category, search } = req.query;
+    const { sector, template_category, category, search, platform = "whatsapp" } = req.query;
 
     const filter = {
       is_admin_template: true,
       deleted_at: null
     };
+
+    if (platform !== "all") {
+      filter.platform = platform;
+    }
 
     if (sector) {
       filter.sector = sector;
@@ -862,27 +896,40 @@ export const getAdminTemplatesForUsers = async (req, res) => {
 export const getAllTemplates = async (req, res) => {
   try {
     const userId = req.user.owner_id;
-    const { waba_id, status, category, search } = req.query;
-
-    if (!waba_id) {
-      return res.status(400).json({ error: "WABA ID is required" });
-    }
-
-    const waba = await WhatsappWaba.findOne({
-      _id: waba_id,
-      user_id: userId,
-      deleted_at: null,
-    });
-    if (!waba) {
-      return res.status(404).json({ error: "WhatsApp WABA not found" });
-    }
+    const { waba_id, status, category, search, platform = "whatsapp" } = req.query;
 
     const filter = {
       user_id: userId,
-      waba_id: waba_id,
       is_admin_template: { $ne: true },
-      deleted_at: null
+      deleted_at: null,
     };
+
+    if (platform === "all") {
+      if (waba_id) {
+        filter.$or = [
+          { platform: { $ne: "whatsapp" } },
+          { platform: "whatsapp", waba_id: waba_id }
+        ];
+      }
+    } else {
+      filter.platform = platform;
+      if (platform === "whatsapp") {
+        if (!waba_id) {
+          return res.status(400).json({ error: "WABA ID is required" });
+        }
+
+        const waba = await WhatsappWaba.findOne({
+          _id: waba_id,
+          user_id: userId,
+          deleted_at: null,
+        });
+        if (!waba) {
+          return res.status(404).json({ error: "WhatsApp WABA not found" });
+        }
+
+        filter.waba_id = waba_id;
+      }
+    }
 
     if (status) {
       filter.status = status;
@@ -893,13 +940,22 @@ export const getAllTemplates = async (req, res) => {
     }
 
     if (search) {
-      filter.$or = [
+      const searchOr = [
         { template_name: { $regex: search, $options: "i" } },
         { template_type: { $regex: search, $options: "i" } },
         { category: { $regex: search, $options: "i" } },
         { template_category: { $regex: search, $options: "i" } },
         { status: { $regex: search, $options: "i" } },
       ];
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchOr }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchOr;
+      }
     }
 
     const templates = await Template.find(filter).sort({ created_at: -1 }).select("-__v").lean();
@@ -1006,7 +1062,6 @@ export const syncTemplatesFromMeta = async (req, res) => {
       try {
         const doc = metaTemplateToDbDocument(metaTemplate, waba_id, userId);
 
-        // Mirror media if it's a remote URL
         if (doc.header && doc.header.format === 'media' && doc.header.media_url && doc.header.media_url.startsWith('http')) {
           try {
             console.log(`[Sync] Mirroring media for template ${doc.template_name}: ${doc.header.media_url}`);
@@ -1194,10 +1249,9 @@ const reconstructAuthBody = (components) => {
     return bodyComponent.text;
   }
 
-  // Fallback if Meta doesn't return the text for some reason
   let text = "{{1}} is your verification code.";
   const authOptions = components.find(c => c.type === "BODY")?.add_security_recommendation;
-  
+
   if (authOptions !== false) {
     text += " For your security, do not share this code.";
   }
@@ -1259,9 +1313,9 @@ const extractHeader = (components) => {
     const example = headerComponent.example || {};
     const handle = example.header_handle?.[0] || example.header_handle || headerComponent.handle;
     const url = example.header_url || example.url || headerComponent.url || headerComponent.header_url;
-    
+
     console.log(`[extractHeader] Media header found. Format: ${format}, Handle: ${handle}, URL: ${url}`);
-    
+
     return {
       format: "media",
       media_type: format.toLowerCase(),
@@ -1578,17 +1632,25 @@ export const updateTemplate = async (req, res) => {
       return res.status(404).json({ error: "Template not found" });
     }
 
-    const waba = await WhatsappWaba.findOne({
-      _id: template.waba_id,
-      user_id: userId,
-      deleted_at: null,
-    });
-    console.log("waba", waba);
-    if (!waba) {
-      return res.status(404).json({ error: "WhatsApp WABA not found" });
-    }
+    let waba = null;
+    let access_token = null;
+    let whatsapp_business_account_id = null;
+    let app_id = null;
 
-    const { access_token, whatsapp_business_account_id, app_id } = waba;
+    if (template.platform === "whatsapp" && template.waba_id) {
+      waba = await WhatsappWaba.findOne({
+        _id: template.waba_id,
+        user_id: userId,
+        deleted_at: null,
+      });
+      console.log("waba", waba);
+      if (!waba) {
+        return res.status(404).json({ error: "WhatsApp WABA not found" });
+      }
+      access_token = waba.access_token;
+      whatsapp_business_account_id = waba.whatsapp_business_account_id;
+      app_id = waba.app_id;
+    }
     const normalizedTemplateType = (template_type || template.template_type || "standard").toLowerCase();
 
     const updateData = {};
@@ -1610,16 +1672,18 @@ export const updateTemplate = async (req, res) => {
       }
 
       if (buffer) {
-        const handle = await uploadSampleMediaForTemplate({
-          app_id: app_id,
-          access_token,
-          file_name: uploadedFile.originalname,
-          file_size: uploadedFile.size,
-          mime_type: uploadedFile.mimetype,
-          buffer: buffer,
-        });
+        let handle = null;
+        if (template.platform === "whatsapp" && app_id && access_token) {
+          handle = await uploadSampleMediaForTemplate({
+            app_id: app_id,
+            access_token,
+            file_name: uploadedFile.originalname,
+            file_size: uploadedFile.size,
+            mime_type: uploadedFile.mimetype,
+            buffer: buffer,
+          });
+        }
 
-        // Save a local copy for stable sending later
         const mediaType = getWhatsAppTypeFromMime(uploadedFile.mimetype);
         const localUrl = await saveBufferLocally(buffer, uploadedFile.mimetype, mediaType, userId);
 
@@ -1627,7 +1691,7 @@ export const updateTemplate = async (req, res) => {
           format: "media",
           media_type: mediaType,
           media_url: localUrl,
-          handle: handle,
+          handle: handle || undefined,
         };
       }
     }
@@ -1652,20 +1716,25 @@ export const updateTemplate = async (req, res) => {
           }
 
           if (buffer) {
-            const handle = await uploadSampleMediaForTemplate({
-              app_id: app_id,
-              access_token,
-              file_name: file.originalname,
-              file_size: file.size,
-              mime_type: file.mimetype,
-              buffer: buffer,
-            });
+            let handle = null;
+            if (template.platform === "whatsapp" && app_id && access_token) {
+              handle = await uploadSampleMediaForTemplate({
+                app_id: app_id,
+                access_token,
+                file_name: file.originalname,
+                file_size: file.size,
+                mime_type: file.mimetype,
+                buffer: buffer,
+              });
+            }
             const card = carousel_cards[i];
             if (card && card.components) {
               const headerComp = card.components.find((c) => (c.type || "").toLowerCase() === "header");
               if (headerComp) {
                 headerComp.format = headerComp.format || getWhatsAppTypeFromMime(file.mimetype);
-                headerComp.example = { header_handle: [handle] };
+                if (handle) {
+                  headerComp.example = { header_handle: [handle] };
+                }
               }
             }
           }
@@ -1758,10 +1827,8 @@ export const updateTemplate = async (req, res) => {
 
     if (header_text !== undefined && !updateData.header) {
       const isCurrentlyMedia = template.header && template.header.format === "media";
-      
+
       if (header_text && header_text.trim() !== '') {
-        // Only overwrite if it's not already a media template, 
-        // or if the user is explicitly providing header_text while no media is present.
         if (!isCurrentlyMedia) {
           updateData.header = {
             format: "text",
@@ -1781,7 +1848,7 @@ export const updateTemplate = async (req, res) => {
 
     const shouldUpdateOnMeta = req.body.should_update_on_meta ?? true === true;
 
-    if (shouldUpdateOnMeta) {
+    if (shouldUpdateOnMeta && template.platform === "whatsapp" && waba) {
       try {
         const wabaId = waba.whatsapp_business_account_id;
         const accessToken = waba.access_token;

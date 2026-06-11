@@ -49,11 +49,34 @@ const getQueueSystem = async () => {
   return { campaignQueue };
 };
 
-export const processCampaignInBackground = async (campaign) => {
+export const processCampaignInBackground = async (campaignOrId) => {
   try {
-    const waba = await WhatsappWaba.findById(campaign.waba_id);
-    if (!waba) {
-      throw new Error('WhatsApp WABA not found');
+    const campaignId = campaignOrId._id || campaignOrId;
+
+    const campaign = await Campaign.findOneAndUpdate(
+      {
+        _id: campaignId,
+        status: { $in: ['draft', 'scheduled'] }
+      },
+      {
+        $set: {
+          status: 'sending',
+          sent_at: new Date()
+        }
+      },
+      { new: true }
+    );
+
+    if (!campaign) {
+      console.log(`[Campaign processing] Campaign ${campaignId} is already in sending or completed state. Skipping.`);
+      return;
+    }
+
+    if (campaign.platform === 'whatsapp') {
+      const waba = await WhatsappWaba.findById(campaign.waba_id);
+      if (!waba) {
+        throw new Error('WhatsApp WABA not found');
+      }
     }
 
     const templateName = campaign.template_name;
@@ -73,6 +96,7 @@ export const processCampaignInBackground = async (campaign) => {
       coupon_code: campaign.coupon_code || null,
       carousel_products: campaign.carousel_products && Array.isArray(campaign.carousel_products) ? campaign.carousel_products : null,
       carousel_cards_data: campaign.carousel_cards_data && Array.isArray(campaign.carousel_cards_data) ? campaign.carousel_cards_data : null,
+      location_data: campaign.location_data || null,
       offer_expiration_minutes: campaign.offer_expiration_minutes ?? null
     };
 
@@ -141,16 +165,12 @@ export const processCampaignInBackground = async (campaign) => {
 
     console.log(`Added ${jobs.length} jobs to campaign queue for campaign ${campaign._id}`);
 
-    campaign.status = 'sending';
-    campaign.sent_at = new Date();
     campaign.stats.total_recipients = campaign.recipients.length;
     campaign.stats.pending_count = campaign.recipients.length;
     campaign.stats.sent_count = 0;
     campaign.stats.failed_count = 0;
     await Campaign.findByIdAndUpdate(campaign._id, {
       $set: {
-        status: 'sending',
-        sent_at: new Date(),
         'stats.total_recipients': campaign.recipients.length,
         'stats.pending_count': campaign.recipients.length,
         'stats.sent_count': 0,
@@ -163,12 +183,15 @@ export const processCampaignInBackground = async (campaign) => {
   } catch (error) {
     console.error('Error processing campaign:', error);
 
-    campaign.status = 'failed';
-    campaign.error_log.push({
-      timestamp: new Date(),
-      error: error.message
+    const campaignId = campaignOrId._id || campaignOrId;
+    await Campaign.findByIdAndUpdate(campaignId, {
+      $set: { status: 'failed' },
+      $push: {
+        error_log: {
+          timestamp: new Date(),
+          error: error.message
+        }
+      }
     });
-
-    await campaign.save();
   }
 };

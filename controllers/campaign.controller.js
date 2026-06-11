@@ -59,21 +59,25 @@ export const createCampaign = async (req, res) => {
       variables_mapping = {},
       media_url,
       coupon_code,
+      location_data,
       carousel_products,
       carousel_cards_data,
       offer_expiration_minutes,
       is_scheduled = false,
       scheduled_at,
-      avoid_unsubscribers = true
+      avoid_unsubscribers = true,
+      platform = 'whatsapp',
+      workspace_id
     } = req.body;
 
     const userId = req.user.owner_id;
+    const resolvedWorkspaceId = workspace_id || req.query.workspace_id || req.headers['x-workspace-id'];
 
     if (!name) {
       return res.status(400).json({ error: 'Campaign name is required' });
     }
 
-    if (!waba_id) {
+    if (platform === 'whatsapp' && !waba_id) {
       return res.status(400).json({ error: 'WABA ID is required' });
     }
 
@@ -119,32 +123,66 @@ export const createCampaign = async (req, res) => {
       }
     }
 
-    let wabaQuery = {
-      user_id: userId,
-      deleted_at: null,
-    };
+    let waba_id_obj = null;
+    if (platform === 'whatsapp') {
+      let wabaQuery = {
+        user_id: userId,
+        deleted_at: null,
+      };
+      if (resolvedWorkspaceId) {
+        wabaQuery.workspace_id = resolvedWorkspaceId;
+      }
 
-    if (mongoose.Types.ObjectId.isValid(waba_id)) {
-      wabaQuery.$or = [
-        { _id: waba_id },
-        { whatsapp_business_account_id: waba_id }
-      ];
-    } else {
-      wabaQuery.whatsapp_business_account_id = waba_id;
+      if (mongoose.Types.ObjectId.isValid(waba_id)) {
+        wabaQuery.$or = [
+          { _id: waba_id },
+          { whatsapp_business_account_id: waba_id }
+        ];
+      } else {
+        wabaQuery.whatsapp_business_account_id = waba_id;
+      }
+
+      const waba = await WhatsappWaba.findOne(wabaQuery);
+
+      if (!waba) {
+        return res.status(404).json({ error: 'WhatsApp WABA not found' });
+      }
+
+      waba_id_obj = waba._id.toString();
     }
-
-    const waba = await WhatsappWaba.findOne(wabaQuery);
-
-    if (!waba) {
-      return res.status(404).json({ error: 'WhatsApp WABA not found' });
-    }
-
-    waba_id = waba._id.toString();
 
     let templateQuery = {
       user_id: userId,
       deleted_at: null
     };
+
+    let andConditions = [];
+
+    if (resolvedWorkspaceId) {
+      andConditions.push({
+        $or: [
+          { workspace_id: resolvedWorkspaceId },
+          { workspace_id: null },
+          { workspace_id: { $exists: false } }
+        ]
+      });
+    }
+
+    if (platform === 'whatsapp') {
+      andConditions.push({
+        $or: [
+          { platform: 'whatsapp' },
+          { platform: { $exists: false } },
+          { platform: null }
+        ]
+      });
+    } else {
+      templateQuery.platform = platform;
+    }
+
+    if (andConditions.length > 0) {
+      templateQuery.$and = andConditions;
+    }
 
     if (template_name) {
       templateQuery.template_name = template_name.toLowerCase();
@@ -170,9 +208,11 @@ export const createCampaign = async (req, res) => {
     tag_ids = typeof tag_ids === 'string' ? JSON.parse(tag_ids) : tag_ids;
     segment_ids = typeof segment_ids === 'string' ? JSON.parse(segment_ids) : segment_ids;
 
+
     const isProductCarousel = isCarouselTemplate && template.carousel_cards?.length > 0 &&
       template.carousel_cards[0].components?.some(c => (c.type || '').toLowerCase() === 'header' && (c.format || '').toLowerCase() === 'product');
-    if (isCarouselTemplate) {
+
+    if (isCarouselTemplate && platform === 'whatsapp') {
       if (isProductCarousel) {
         if (!carouselProducts || !Array.isArray(carouselProducts) || carouselProducts.length === 0) {
           return res.status(400).json({
@@ -197,19 +237,48 @@ export const createCampaign = async (req, res) => {
     let avoidUnsub = avoid_unsubscribers;
     if (typeof avoidUnsub === 'string') avoidUnsub = avoidUnsub === 'true';
 
+    const platformFilter = {};
+    if (platform === 'whatsapp') {
+      platformFilter.phone_number = { $exists: true, $ne: '' };
+    } else if (platform === 'telegram') {
+      platformFilter.telegram_chat_id = { $exists: true, $ne: '' };
+    } else if (platform === 'facebook') {
+      platformFilter.facebook_page_scoped_id = { $exists: true, $ne: '' };
+    } else if (platform === 'instagram') {
+      platformFilter.instagram_scoped_id = { $exists: true, $ne: '' };
+    }
+
     let contacts = [];
     if (recipient_type === 'all_contacts') {
-      contacts = await Contact.find({
+      const allContactsQuery = {
         created_by: userId,
-        deleted_at: null
-      });
+        deleted_at: null,
+        ...platformFilter
+      };
+      if (resolvedWorkspaceId) {
+        allContactsQuery.$or = [
+          { workspace_id: resolvedWorkspaceId },
+          { workspace_id: null },
+          { workspace_id: { $exists: false } }
+        ];
+      }
+      contacts = await Contact.find(allContactsQuery);
     } else if (recipient_type === 'specific_contacts') {
       if (specific_contacts && specific_contacts.length > 0) {
-        contacts = await Contact.find({
+        const specificQuery = {
           _id: { $in: specific_contacts },
           created_by: userId,
-          deleted_at: null
-        });
+          deleted_at: null,
+          ...platformFilter
+        };
+        if (resolvedWorkspaceId) {
+          specificQuery.$or = [
+            { workspace_id: resolvedWorkspaceId },
+            { workspace_id: null },
+            { workspace_id: { $exists: false } }
+          ];
+        }
+        contacts = await Contact.find(specificQuery);
       } else if (contact_numbers && contact_numbers.length > 0) {
         const cleanedNumbers = contact_numbers.map(num => num.replace(/[\s\-()\+]/g, ''));
         const invalidNumbers = cleanedNumbers.filter(num => !/^\d{6,15}$/.test(num));
@@ -220,11 +289,29 @@ export const createCampaign = async (req, res) => {
           });
         }
 
-        contacts = await Contact.find({
+        const queryConditions = {
           phone_number: { $in: cleanedNumbers },
           created_by: userId,
           deleted_at: null
-        });
+        };
+        if (resolvedWorkspaceId) {
+          queryConditions.$or = [
+            { workspace_id: resolvedWorkspaceId },
+            { workspace_id: null },
+            { workspace_id: { $exists: false } }
+          ];
+        }
+        if (platformFilter.phone_number) {
+          queryConditions.phone_number = {
+            $in: cleanedNumbers,
+            $exists: true,
+            $ne: ''
+          };
+        } else {
+          Object.assign(queryConditions, platformFilter);
+        }
+
+        contacts = await Contact.find(queryConditions);
 
         const foundNumbers = contacts.map(c => c.phone_number);
         const missingNumbers = cleanedNumbers.filter(num => !foundNumbers.includes(num));
@@ -235,6 +322,7 @@ export const createCampaign = async (req, res) => {
             name: num,
             user_id: userId,
             created_by: userId,
+            workspace_id: resolvedWorkspaceId || undefined,
             status: 'lead'
           }));
           const newlyCreated = await Contact.insertMany(newContactsToInsert);
@@ -242,13 +330,31 @@ export const createCampaign = async (req, res) => {
         }
       }
     } else if (recipient_type === 'tags') {
-      contacts = await Contact.find({
+      const tagsQuery = {
         tags: { $in: tag_ids },
         created_by: userId,
-        deleted_at: null
-      });
+        deleted_at: null,
+        ...platformFilter
+      };
+      if (resolvedWorkspaceId) {
+        tagsQuery.$or = [
+          { workspace_id: resolvedWorkspaceId },
+          { workspace_id: null },
+          { workspace_id: { $exists: false } }
+        ];
+      }
+      contacts = await Contact.find(tagsQuery);
     } else if (recipient_type === 'segments') {
-      contacts = await segmentService.getContactsForSegments(segment_ids, userId);
+      contacts = await segmentService.getContactsForSegments(segment_ids, userId, resolvedWorkspaceId);
+      if (platform === 'whatsapp') {
+        contacts = contacts.filter(c => c.phone_number);
+      } else if (platform === 'telegram') {
+        contacts = contacts.filter(c => c.telegram_chat_id);
+      } else if (platform === 'facebook') {
+        contacts = contacts.filter(c => c.facebook_page_scoped_id);
+      } else if (platform === 'instagram') {
+        contacts = contacts.filter(c => c.instagram_scoped_id);
+      }
     }
 
     const totalFoundBeforeFilter = contacts.length;
@@ -263,11 +369,21 @@ export const createCampaign = async (req, res) => {
       return res.status(400).json({ error: 'No contacts found for the specified criteria' });
     }
 
-    const recipients = contacts.map(contact => ({
-      contact_id: contact._id,
-      phone_number: contact.phone_number,
-      status: 'pending'
-    }));
+    const recipients = contacts.map(contact => {
+      let identifier = contact.phone_number;
+      if (platform === 'telegram') {
+        identifier = contact.telegram_chat_id || contact.phone_number;
+      } else if (platform === 'facebook') {
+        identifier = contact.facebook_page_scoped_id || contact.phone_number;
+      } else if (platform === 'instagram') {
+        identifier = contact.instagram_scoped_id || contact.phone_number;
+      }
+      return {
+        contact_id: contact._id,
+        phone_number: identifier,
+        status: 'pending'
+      };
+    });
 
     const baseUrl = process.env.APP_URL || (req ? `${req.protocol}://${req.get('host')}` : '');
     const uploadedFileUrl = req.file || (req.files && req.files['file_url'] ? req.files['file_url'][0] : null);
@@ -306,9 +422,11 @@ export const createCampaign = async (req, res) => {
     const campaign = await Campaign.create({
       name,
       description,
+      workspace_id: resolvedWorkspaceId || null,
       user_id: userId,
       created_by: req.user.id,
-      waba_id,
+      waba_id: platform === 'whatsapp' ? waba_id_obj : undefined,
+      platform,
       template_id,
       template_name: template.template_name,
       language_code: language_code ?? template.language,
@@ -320,6 +438,7 @@ export const createCampaign = async (req, res) => {
       variables_mapping: typeof variables_mapping === 'string' ? JSON.parse(variables_mapping) : variables_mapping,
       media_url: finalMediaUrl,
       coupon_code: coupon_code || null,
+      location_data: typeof location_data === 'string' ? JSON.parse(location_data) : (location_data || undefined),
       carousel_products: carouselProducts && Array.isArray(carouselProducts) ? carouselProducts : undefined,
       carousel_cards_data: resolvedCarouselCardsData && Array.isArray(resolvedCarouselCardsData) ? resolvedCarouselCardsData : undefined,
       offer_expiration_minutes: offer_expiration_minutes ?? null,
@@ -335,13 +454,12 @@ export const createCampaign = async (req, res) => {
     });
 
     if (!isScheduledBool) {
+      setImmediate(async () => {
+        await processCampaignInBackground(campaign._id);
+      });
+
       campaign.status = 'sending';
       campaign.sent_at = new Date();
-      await campaign.save();
-
-      setImmediate(async () => {
-        await processCampaignInBackground(campaign);
-      });
 
       return res.status(201).json({
         success: true,
@@ -369,17 +487,26 @@ export const createCampaign = async (req, res) => {
 export const getAllCampaigns = async (req, res) => {
   try {
     const userId = req.user.owner_id;
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
     const { page, limit, skip } = parsePaginationParams(req.query);
     const { sortField, sortOrder } = parseSortParams(req.query);
-    const { status, search } = req.query;
+    const { status, search, platform } = req.query;
 
     const matchFilter = {
       user_id: new mongoose.Types.ObjectId(userId),
       deleted_at: null
     };
 
+    if (workspaceId) {
+      matchFilter.workspace_id = new mongoose.Types.ObjectId(workspaceId);
+    }
+
     if (status) {
       matchFilter.status = status;
+    }
+
+    if (platform) {
+      matchFilter.platform = platform;
     }
 
     if (search) {
@@ -396,7 +523,7 @@ export const getAllCampaigns = async (req, res) => {
       Campaign.countDocuments(matchFilter),
       Campaign.find(matchFilter)
         .select(
-          'name description recipient_type is_scheduled scheduled_at sent_at stats status completion_duration_seconds template_id created_at'
+          'name description recipient_type is_scheduled scheduled_at sent_at stats status completion_duration_seconds template_id created_at platform'
         )
         .populate({
           path: 'template_id',
@@ -438,7 +565,8 @@ export const getAllCampaigns = async (req, res) => {
       sent_at: c.sent_at,
       stats: c.stats,
       status: c.status,
-      completion_duration_seconds: c.completion_duration_seconds
+      completion_duration_seconds: c.completion_duration_seconds,
+      platform: c.platform
     }));
 
     return res.json({
@@ -475,12 +603,16 @@ export const getCampaignById = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.owner_id;
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
 
-    const campaign = await Campaign.findOne({
+    const query = {
       _id: id,
       user_id: userId,
       deleted_at: null
-    })
+    };
+    if (workspaceId) query.workspace_id = workspaceId;
+
+    const campaign = await Campaign.findOne(query)
       .populate('template_id')
       .populate('waba_id', 'whatsapp_business_account_id')
       .populate('specific_contacts', 'name phone_number')
@@ -530,12 +662,15 @@ export const updateCampaign = async (req, res) => {
       updateData.specific_contacts = JSON.parse(updateData.specific_contacts);
     }
 
-
-    const campaign = await Campaign.findOne({
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
+    const query = {
       _id: id,
       user_id: userId,
       deleted_at: null
-    });
+    };
+    if (workspaceId) query.workspace_id = workspaceId;
+
+    const campaign = await Campaign.findOne(query);
 
     if (!campaign) {
       return res.status(404).json({
@@ -616,12 +751,16 @@ export const deleteCampaign = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.owner_id;
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
 
-    const campaign = await Campaign.findOne({
+    const query = {
       _id: id,
       user_id: userId,
       deleted_at: null
-    });
+    };
+    if (workspaceId) query.workspace_id = workspaceId;
+
+    const campaign = await Campaign.findOne(query);
 
     if (!campaign) {
       return res.status(404).json({
@@ -658,12 +797,16 @@ export const sendCampaign = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.owner_id;
+    const workspaceId = req.query.workspace_id || req.headers['x-workspace-id'];
 
-    const campaign = await Campaign.findOne({
+    const query = {
       _id: id,
       user_id: userId,
       deleted_at: null
-    }).populate('template_id');
+    };
+    if (workspaceId) query.workspace_id = workspaceId;
+
+    const campaign = await Campaign.findOne(query).populate('template_id');
 
     if (!campaign) {
       return res.status(404).json({
@@ -679,14 +822,8 @@ export const sendCampaign = async (req, res) => {
       });
     }
 
-
-    campaign.status = 'sending';
-    campaign.sent_at = new Date();
-    await campaign.save();
-
-
     setTimeout(async () => {
-      await processCampaignInBackground(campaign);
+      await processCampaignInBackground(campaign._id);
     }, 0);
 
     return res.json({
@@ -695,7 +832,7 @@ export const sendCampaign = async (req, res) => {
       data: {
         campaign_id: campaign._id,
         total_recipients: campaign.stats.total_recipients,
-        status: campaign.status
+        status: 'sending'
       }
     });
 
