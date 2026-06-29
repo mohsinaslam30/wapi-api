@@ -1,0 +1,44 @@
+<% layout('layouts/stmv', { title: 'Requirements & Directories' }) %>
+<div class="wizard-step-1 d-block">
+  <h6>Please make sure the required environment items listed below are satisfied</h6>
+  <div class="table-responsive custom-scrollbar">
+    <table class="table">
+      <thead>
+        <tr><th>Extensions</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <% Object.keys(configurations).forEach(function(key){ %>
+          <tr>
+            <td><%= key %></td>
+            <td class="icon-success"><i class="fa-solid fa-<%= configurations[key] ? 'check' : 'times' %>"></i></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="wizard-step-2 d-block mt-4">
+  <h6>Directory Permissions</h6>
+  <div class="table-responsive">
+    <table class="table">
+      <thead><tr><th>Directory</th><th>Status</th></tr></thead>
+      <tbody>
+      <% Object.keys(directories).forEach(function(dir){ %>
+        <tr>
+          <td><%= dir %></td>
+          <td class="icon-success"><i class="fas fa-<%= directories[dir] ? 'check' : 'times' %>"></i></td>
+        </tr>
+      <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="next-btn text-right mt-3">
+  <% if (configured && dirsConfigured) { %>
+    <a href="/install/license" class="btn btn-primary">Next <i class="far fa-hand-point-right ms-2"></i></a>
+  <% } else { %>
+    <a href="javascript:void(0)" class="btn btn-primary disabled">Next <i class="far fa-hand-point-right ms-2"></i></a>
+  <% } %>
+</div>

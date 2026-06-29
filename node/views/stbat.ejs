@@ -1,0 +1,99 @@
+<% layout('layouts/stmv', { title: 'Database' }) %>
+<div class="wizard-step-3 d-block">
+  <h6>Configure your database connection</h6>
+
+  <% if (typeof session !== 'undefined' && session._errors) { %>
+    <div class="alert alert-danger">
+      <% Object.keys(session._errors).forEach(key => { %>
+        <div><%= session._errors[key] %></div>
+      <% }) %>
+    </div>
+  <% } %>
+
+  <form method="POST" action="/install/database" class="mt-4">
+    <div class="database-field">
+      <h5 class="mb-3">Database Configuration</h5>
+
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <label for="DB_HOST">Database Host</label>
+          <input type="text" class="form-control" id="DB_HOST" name="database[DB_HOST]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.database && session._old.database.DB_HOST ? session._old.database.DB_HOST : '127.0.0.1' %>" required>
+          <small class="form-text text-muted">e.g., localhost or 127.0.0.1</small>
+        </div>
+
+        <div class="col-md-6 mb-3">
+          <label for="DB_PORT">Database Port</label>
+          <input type="number" class="form-control" id="DB_PORT" name="database[DB_PORT]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.database && session._old.database.DB_PORT ? session._old.database.DB_PORT : '27017' %>" required>
+          <small class="form-text text-muted">Default: 27017</small>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <label for="DB_DATABASE">Database Name</label>
+          <input type="text" class="form-control" id="DB_DATABASE" name="database[DB_DATABASE]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.database && session._old.database.DB_DATABASE ? session._old.database.DB_DATABASE : 'whatsdesk' %>" required>
+        </div>
+
+        <div class="col-md-6 mb-3">
+          <label for="DB_USERNAME">Database Username (Optional)</label>
+          <input type="text" class="form-control" id="DB_USERNAME" name="database[DB_USERNAME]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.database && session._old.database.DB_USERNAME ? session._old.database.DB_USERNAME : '' %>">
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <label for="DB_PASSWORD">Database Password (Optional)</label>
+          <input type="password" class="form-control" id="DB_PASSWORD" name="database[DB_PASSWORD]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.database && session._old.database.DB_PASSWORD ? session._old.database.DB_PASSWORD : '' %>">
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-field mt-5">
+      <h5 class="mb-3">Admin User Configuration</h5>
+
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <label for="first_name">First Name</label>
+          <input type="text" class="form-control" id="first_name" name="admin[first_name]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.admin && session._old.admin.first_name ? session._old.admin.first_name : '' %>" required>
+        </div>
+
+        <div class="col-md-6 mb-3">
+          <label for="last_name">Last Name</label>
+          <input type="text" class="form-control" id="last_name" name="admin[last_name]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.admin && session._old.admin.last_name ? session._old.admin.last_name : '' %>" required>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <label for="email">Email Address</label>
+          <input type="email" class="form-control" id="email" name="admin[email]"
+                 value="<%= typeof session !== 'undefined' && session._old && session._old.admin && session._old.admin.email ? session._old.admin.email : '' %>" required>
+        </div>
+
+        <div class="col-md-6 mb-3">
+          <label for="password">Password</label>
+          <input type="password" class="form-control" id="password" name="admin[password]" minlength="6" required>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-6 mb-3">
+          <label for="password_confirmation">Confirm Password</label>
+          <input type="password" class="form-control" id="password_confirmation" name="admin[password_confirmation]" minlength="6" required>
+        </div>
+      </div>
+    </div>
+
+    <div class="next-btn text-right mt-4">
+      <a href="/install/license" class="btn btn-primary"><i class="far fa-hand-point-left me-2"></i> Previous</a>
+      <button type="submit" class="btn btn-primary ms-2">Setup Database <i class="far fa-hand-point-right ms-2"></i></button>
+    </div>
+  </form>
+</div>

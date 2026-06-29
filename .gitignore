@@ -1,0 +1,7 @@
+package-lock.json
+node_modules/
+.env
+uploads/
+auth_info_baileys
+auth
+storage

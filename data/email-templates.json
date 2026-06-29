@@ -1,0 +1,219 @@
+[
+  {
+    "name": "Welcome Message",
+    "description": "Sent to a user immediately after they register.",
+    "slug": "welcome-message",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "User Email",
+        "action": "{{user_email}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Login URL",
+        "action": "{{login_url}}"
+      }
+    ],
+    "subject": "Welcome to {{company_name}}!",
+    "content": "<p>Hello {{user_name}},</p><p>Welcome to {{company_name}}! We are thrilled to have you.</p><p>You can login here: <a href=\"{{login_url}}\">Login</a></p>"
+  },
+  {
+    "name": "Registration OTP",
+    "description": "Sent when a user starts registration to verify their email.",
+    "slug": "registration-otp",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "OTP Code",
+        "action": "{{otp_code}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Registration OTP - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your OTP code to verify your email for registration is: <strong>{{otp_code}}</strong></p><p>If you did not request this, please ignore this email.</p>"
+  },
+  {
+    "name": "Password Reset OTP",
+    "description": "Sent when a user requests to reset their password.",
+    "slug": "password-reset-otp",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Reset URL",
+        "action": "{{reset_url}}"
+      },
+      {
+        "type": "variable",
+        "text": "OTP Code",
+        "action": "{{otp_code}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Password Reset OTP - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your OTP code to reset your password is: <strong>{{otp_code}}</strong></p><p>If you did not request this, please ignore this email.</p>"
+  },
+  {
+    "name": "Resend OTP",
+    "description": "Sent when a user requests to resend their OTP.",
+    "slug": "resend-otp",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "OTP Code",
+        "action": "{{otp_code}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Resend OTP - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your requested OTP code is: <strong>{{otp_code}}</strong></p><p>If you did not request this, please ignore this email.</p>"
+  },
+  {
+    "name": "Password Reset Success",
+    "description": "Sent when a user successfully resets their password.",
+    "slug": "password-reset-success",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Password Changed Successfully - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your password has been successfully reset. If you did not make this change, please contact support immediately.</p>"
+  },
+  {
+    "name": "Plan Activation",
+    "description": "Sent when a user successfully subscribes to a new plan.",
+    "slug": "plan-activation",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Plan Name",
+        "action": "{{plan_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Amount Paid",
+        "action": "{{amount_paid}}"
+      },
+      {
+        "type": "variable",
+        "text": "Validity Days",
+        "action": "{{validity_days}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Plan Activated - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your plan <strong>{{plan_name}}</strong> has been activated for {{validity_days}} days. You paid {{amount_paid}}.</p>"
+  },
+  {
+    "name": "Plan Renewal Reminder",
+    "description": "Sent as a reminder before a user's plan expires.",
+    "slug": "plan-renewal",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Plan Name",
+        "action": "{{plan_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Days Remaining",
+        "action": "{{days_remaining}}"
+      },
+      {
+        "type": "variable",
+        "text": "Renewal URL",
+        "action": "{{renewal_url}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Plan Renewal Reminder - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your plan <strong>{{plan_name}}</strong> expires in {{days_remaining}} days. <a href=\"{{renewal_url}}\">Renew now</a>.</p>"
+  },
+  {
+    "name": "Plan Expiration",
+    "description": "Sent when a user's plan has expired.",
+    "slug": "plan-expiration",
+    "shortcodes": [
+      {
+        "type": "variable",
+        "text": "User Name",
+        "action": "{{user_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Plan Name",
+        "action": "{{plan_name}}"
+      },
+      {
+        "type": "variable",
+        "text": "Company Name",
+        "action": "{{company_name}}"
+      }
+    ],
+    "subject": "Plan Expired - {{company_name}}",
+    "content": "<p>Hello {{user_name}},</p><p>Your plan <strong>{{plan_name}}</strong> has expired. Please renew to continue using our services.</p>"
+  }
+]
